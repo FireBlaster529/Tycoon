@@ -97,8 +97,14 @@ local function toggleCard(x,heading,description,accent)
     local dot=Instance.new('Frame'); dot.Position=UDim2.fromOffset(14,16); dot.Size=UDim2.fromOffset(7,7); dot.BackgroundColor3=accent; dot.BorderSizePixel=0; dot.Parent=obj; round(dot,4)
     label(obj,heading,28,10,133,22,13,C.text,true); label(obj,description,14,36,146,17,10,C.muted)
     local button=Instance.new('TextButton'); button.Position=UDim2.fromOffset(12,69); button.Size=UDim2.fromOffset(150,34); button.BackgroundColor3=C.bg; button.BorderSizePixel=0; button.Font=Enum.Font.GothamBold; button.TextSize=11; button.TextColor3=C.muted; button.AutoButtonColor=false; button.Parent=obj; round(button,9)
-    connect(button.MouseEnter,function() TweenService:Create(button,TweenInfo.new(0.12),{BackgroundTransparency=0.15}):Play() end)
-    connect(button.MouseLeave,function() TweenService:Create(button,TweenInfo.new(0.12),{BackgroundTransparency=0}):Play() end)
+    local hoverTween
+    local function hover(transparency)
+        if hoverTween then hoverTween:Cancel() end
+        hoverTween=TweenService:Create(button,TweenInfo.new(0.12),{BackgroundTransparency=transparency})
+        hoverTween:Play()
+    end
+    connect(button.MouseEnter,function() hover(0.15) end)
+    connect(button.MouseLeave,function() hover(0) end)
     return button,dot
 end
 local buyButton,buyDot=toggleCard(0,'Auto Buy','Buy without moving',C.green)
@@ -235,7 +241,13 @@ local function eligible(object)
     local display=object:FindFirstChild('NameDisplay',true)
     local nameLabel=display and (display:IsA('TextLabel') and display or display:FindFirstChildWhichIsA('TextLabel',true))
     if nameLabel and not nameLabel.Text:match('%S') then return nil end
-    local cost=number(data.price.Text); if cost==nil then return nil end
+    -- Reparse only when the displayed price changes, including invalid text.
+    local text=data.price.Text
+    if data.lastPriceText~=text then
+        data.lastPriceText=text
+        data.lastPrice=number(text)
+    end
+    local cost=data.lastPrice; if cost==nil then return nil end
     return data,cost
 end
 local function updateBuy()
@@ -244,15 +256,20 @@ local function updateBuy()
     if not buttons or not root then status.Text='Waiting for tycoon / character'; return end
     local balance=cash(); local now=os.clock(); local selected,selectedData; local cheapest=math.huge
     for _,object in ipairs(buttons:GetChildren()) do
-        local data,cost=eligible(object)
-        if data and cost<=balance and now>=(retries[object] or 0) and cost<cheapest then selected,selectedData,cheapest=object,data,cost end
+        -- A cooling-down button cannot be selected; skip its GUI searches.
+        if now>=(retries[object] or 0) then
+            local data,cost=eligible(object)
+            if data and cost<=balance and cost<cheapest then
+                selected,selectedData,cheapest=object,data,cost
+            end
+        end
     end
     if not selected then status.Text='Waiting for cash / next purchase'; return end
     retries[selected]=now+1; status.Text='Buying: '..selected.Name
     local part=selectedData.part; firetouchinterest(root,part,0); task.wait(0.05)
     pcall(function() firetouchinterest(root,part,1) end)
 end
--- Rebirth readiness: required cash only, never arbitrary notification text.
+-- Rebirth readiness: numeric cash goal or completed exact progress display.
 local cachedGoal
 local function rebirthObjects()
     local pg=player:FindFirstChild('PlayerGui')
@@ -270,19 +287,44 @@ local function rebirthObjects()
     end
     return {frame=menu,button=button,target=target,progress=progress and progress:FindFirstChildWhichIsA('TextLabel',true)}
 end
+local goalParseCache=setmetatable({},{__mode='k'})
 local function goalFrom(labelObject)
     if not labelObject or not labelObject:IsA('TextLabel') then return nil end
-    local _,right=labelObject.Text:match('(.-)%s*/%s*(.+)')
+    local text=labelObject.Text
+    local cached=goalParseCache[labelObject]
+    if cached and cached.text==text then return cached.goal end
+    local _,right=text:match('(.-)%s*/%s*(.+)')
     local goal=right and number(right)
-    return goal and goal>0 and goal or nil
+    goal=goal and goal>0 and goal or nil
+    goalParseCache[labelObject]={text=text,goal=goal}
+    return goal
+end
+local function progressSaysReady(labelObject)
+    if not labelObject or not labelObject:IsA('TextLabel') then return false end
+    local text=labelObject.Text:upper():match('^%s*(.-)%s*$')
+    -- Only the game's exact rebirth progress labels are used here.
+    -- Arbitrary notifications cannot trigger rebirth.
+    if text:find('NOT COMPLETE',1,true) or text:find('INCOMPLETE',1,true)
+        or text:find('NOT READY',1,true) then return false end
+    local percent=tonumber(text:match('(%d+%.?%d*)%%'))
+    if percent then return percent>=100 end
+    for word in text:gmatch('%a+') do
+        if word=='COMPLETE' or word=='COMPLETED' or word=='MAX' or word=='DONE' then
+            return true
+        end
+    end
+    return false
 end
 local function readGoal()
     local pg=player:FindFirstChild('PlayerGui')
     local progress=path(pg,'System','RebirthProgress','Progress')
     local progressLabel=progress and progress:FindFirstChildWhichIsA('TextLabel',true)
-    local goal=goalFrom(progressLabel)
-    if not goal then goal=goalFrom(rebirthObjects().progress) end
-    if goal then cachedGoal=goal end
+    local menuProgress=rebirthObjects().progress
+    local goal=goalFrom(progressLabel) or goalFrom(menuProgress)
+    if goal then cachedGoal=goal; return goal end
+    -- Zero is a readiness token, not a guessed cash requirement.
+    -- It allows players already COMPLETE at startup to open the menu.
+    if progressSaysReady(progressLabel) or progressSaysReady(menuProgress) then return 0 end
     return cachedGoal
 end
 local function essenceCapped()
@@ -316,7 +358,9 @@ local function rebirthConfirmed(beforeCount,beforeCash,oldGoal)
     local left,right
     if labelObject then left,right=labelObject.Text:match('(.-)%s*/%s*(.+)') end
     local current,goal=left and number(left),right and number(right)
-    return beforeCash>=oldGoal and cash()<oldGoal and cash()<beforeCash
+    local afterCash=cash()
+    local cashReset=afterCash<beforeCash and (oldGoal==0 or afterCash<oldGoal)
+    return beforeCash>=oldGoal and cashReset
         and current~=nil and goal~=nil and current<goal
         and not visible(rebirthObjects().frame)
 end
