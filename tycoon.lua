@@ -1,4 +1,4 @@
--- TBOD Automation: simulated-touch buying + verified rebirth attempts
+-- TBOD Automation: simulated-touch buying + cursor-free rebirth attempts
 -- Drag the header. Click +/- to minimize. Both features start OFF.
 local Players = game:GetService('Players')
 local Workspace = game:GetService('Workspace')
@@ -320,26 +320,6 @@ local function rebirthConfirmed(beforeCount,beforeCash,oldGoal)
         and current~=nil and goal~=nil and current<goal
         and not visible(rebirthObjects().frame)
 end
-local function mouseClick(button, addInset)
-    if not button or not button:IsA('GuiButton') or not visible(button) then return false end
-    local camera=Workspace.CurrentCamera; if not camera then return false end
-    local position=button.AbsolutePosition+button.AbsoluteSize/2
-    if addInset then local inset=game:GetService('GuiService'):GetGuiInset(); position=position+inset end
-    local viewport=camera.ViewportSize
-    if button.AbsoluteSize.X<=0 or button.AbsoluteSize.Y<=0 or position.X<0 or position.Y<0 or position.X>=viewport.X or position.Y>=viewport.Y then return false end
-    -- Hide this dashboard briefly so it cannot intercept the confirmation click.
-    local enabled=gui.Enabled
-    gui.Enabled=false
-    local ok,err=pcall(function()
-        local input=game:GetService('VirtualInputManager')
-        input:SendMouseMoveEvent(position.X,position.Y,game); task.wait(0.15)
-        input:SendMouseButtonEvent(position.X,position.Y,0,true,game,0); task.wait(0.15)
-        input:SendMouseButtonEvent(position.X,position.Y,0,false,game,0)
-    end)
-    if state.running then gui.Enabled=enabled end
-    if not ok then warn('[TBOD Rebirth mouse]',err) end
-    return ok
-end
 local function connectedClick(button, signalName)
     if not button or not button:IsA('GuiButton') or not visible(button) then return false end
     if type(getconnections)~='function' then return false end
@@ -426,17 +406,10 @@ local function startRebirth(goal)
             if state.mode=='Essence Cap' and not essenceCapped() then status.Text='Waiting for essence cap'; return end
             local button=rebirthObjects().button
             warn('[TBOD Rebirth] Confirmation target: '..button:GetFullName()..' ['..button.ClassName..']')
+            -- Cursor-free activation only: no VirtualInputManager mouse events.
             local methods={
-                {name='mouse / standard inset',run=function(b)
-                    local screen=b:FindFirstAncestorWhichIsA('ScreenGui')
-                    return mouseClick(b,screen and not screen.IgnoreGuiInset)
-                end},
                 {name='MouseButton1Click connection',run=function(b) return connectedClick(b,'MouseButton1Click') end},
                 {name='Activated connection',run=function(b) return connectedClick(b,'Activated') end},
-                {name='mouse / alternate inset',run=function(b)
-                    local screen=b:FindFirstAncestorWhichIsA('ScreenGui')
-                    return mouseClick(b,not (screen and not screen.IgnoreGuiInset))
-                end},
                 {name='MouseButton1Click signal',run=function(b) return signalClick(b,'MouseButton1Click') end},
                 {name='Activated signal',run=function(b) return signalClick(b,'Activated') end},
             }
@@ -461,11 +434,11 @@ local function startRebirth(goal)
                 status.Text='Rebirth verified'
                 task.wait(1)
             elseif activeRebirth() then
-                error('Rebirth not verified; confirmation will retry')
+                error('Cursor-free rebirth not verified; executor callbacks/signals may be unsupported')
             end
         end)
         state.busy=false
-        if not success and state.running then status.Text='Rebirth not confirmed; see console'; warn('[TBOD Rebirth]',err) end
+        if not success and state.running then status.Text='Cursor-free confirmation failed; see console'; warn('[TBOD Rebirth]',err) end
     end)
 end
 connect(player.CharacterAdded,function() nextLookup=0; table.clear(retries) end)
