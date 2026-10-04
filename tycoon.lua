@@ -1,11 +1,11 @@
-
--- TBOD: Auto Buy + Auto Rebirth
--- No external UI libraries.
--- Auto Buy requires executor support for firetouchinterest.
+-- TBOD Automation
+-- Bento GUI with dragging and minimizing.
+-- Auto Buy uses simulated touches without moving your character.
 
 local Players = game:GetService("Players")
 local Workspace = game:GetService("Workspace")
 local UIS = game:GetService("UserInputService")
+local TweenService = game:GetService("TweenService")
 local player = Players.LocalPlayer
 
 local env = getgenv()
@@ -15,7 +15,6 @@ if env[KEY] and env[KEY].stop then
 	env[KEY].stop()
 end
 
--- Stop the earlier combined script if it is still running.
 if env.__TycoonAutoBuyRebirth and env.__TycoonAutoBuyRebirth.stop then
 	env.__TycoonAutoBuyRebirth.stop()
 end
@@ -47,6 +46,7 @@ end
 
 local function visible(object)
 	if not object or not object.Parent then return false end
+
 	while object do
 		if object:IsA("GuiObject") and not object.Visible then
 			return false
@@ -55,6 +55,7 @@ local function visible(object)
 		end
 		object = object.Parent
 	end
+
 	return true
 end
 
@@ -71,10 +72,12 @@ local multipliers = {
 
 local function number(text)
 	text = tostring(text or ""):upper():gsub(",", "")
+
 	if text:find("FREE", 1, true) then return 0 end
 
 	local value, suffix = text:match("(%d+%.?%d*)%s*(%a*)")
 	value = tonumber(value)
+
 	if not value then return nil end
 	if suffix ~= "" and not multipliers[suffix] then return nil end
 
@@ -103,81 +106,234 @@ local function cash()
 	return label and number(label.Text) or 0
 end
 
--- GUI
+-- Bento GUI
+local colors = {
+	background = Color3.fromRGB(13, 15, 22),
+	card = Color3.fromRGB(23, 26, 37),
+	border = Color3.fromRGB(43, 48, 65),
+	text = Color3.fromRGB(240, 242, 250),
+	muted = Color3.fromRGB(151, 160, 181),
+	purple = Color3.fromRGB(155, 125, 255),
+	green = Color3.fromRGB(91, 220, 167),
+}
+
 local gui = Instance.new("ScreenGui")
 gui.Name = "TBODAutomation"
 gui.ResetOnSpawn = false
+gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 gui.Parent = game:GetService("CoreGui")
 
-local frame = Instance.new("Frame")
-frame.Size = UDim2.fromOffset(265, 190)
-frame.Position = UDim2.fromOffset(20, 120)
-frame.BackgroundColor3 = Color3.fromRGB(20, 20, 26)
-frame.ClipsDescendants = true
-frame.Active = true
-frame.Parent = gui
-Instance.new("UICorner", frame).CornerRadius = UDim.new(0, 8)
+local function round(object, radius)
+	local corner = Instance.new("UICorner")
+	corner.CornerRadius = UDim.new(0, radius)
+	corner.Parent = object
+end
 
-local title = Instance.new("TextLabel")
-title.Size = UDim2.new(1, -35, 0, 30)
-title.BackgroundTransparency = 1
-title.Text = "TBOD Automation"
-title.Font = Enum.Font.GothamBold
-title.TextSize = 14
-title.TextColor3 = Color3.new(1, 1, 1)
-title.Active = true
-title.Parent = frame
+local function outline(object)
+	local stroke = Instance.new("UIStroke")
+	stroke.Color = colors.border
+	stroke.Thickness = 1
+	stroke.Transparency = 0.2
+	stroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+	stroke.Parent = object
+end
 
-local function button(y)
-	local object = Instance.new("TextButton")
-	object.Position = UDim2.fromOffset(10, y)
-	object.Size = UDim2.new(1, -20, 0, 30)
-	object.BackgroundColor3 = Color3.fromRGB(40, 40, 50)
-	object.TextColor3 = Color3.new(1, 1, 1)
-	object.Font = Enum.Font.Gotham
-	object.TextSize = 13
-	object.Parent = frame
-	Instance.new("UICorner", object).CornerRadius = UDim.new(0, 6)
+local function label(parent, text, x, y, width, height, size, color, bold)
+	local object = Instance.new("TextLabel")
+	object.BackgroundTransparency = 1
+	object.Position = UDim2.fromOffset(x, y)
+	object.Size = UDim2.fromOffset(width, height)
+	object.Font = bold and Enum.Font.GothamBold or Enum.Font.Gotham
+	object.Text = text
+	object.TextSize = size
+	object.TextColor3 = color or colors.text
+	object.TextXAlignment = Enum.TextXAlignment.Left
+	object.Parent = parent
 	return object
 end
 
-local buyButton = button(35)
-local rebirthButton = button(70)
-local modeButton = button(105)
+local frame = Instance.new("Frame")
+frame.Size = UDim2.fromOffset(390, 338)
+frame.Position = UDim2.fromOffset(24, 120)
+frame.BackgroundColor3 = colors.background
+frame.BorderSizePixel = 0
+frame.Active = true
+frame.ClipsDescendants = true
+frame.Parent = gui
+round(frame, 18)
+outline(frame)
 
-local status = Instance.new("TextLabel")
-status.Position = UDim2.fromOffset(10, 140)
-status.Size = UDim2.new(1, -20, 0, 40)
-status.BackgroundTransparency = 1
-status.Text = "Paused"
-status.TextWrapped = true
-status.Font = Enum.Font.Gotham
-status.TextSize = 12
-status.TextColor3 = Color3.fromRGB(190, 190, 200)
-status.Parent = frame
+local scale = Instance.new("UIScale")
+scale.Parent = frame
+
+local function fitScreen()
+	local camera = Workspace.CurrentCamera
+	if camera then
+		local viewport = camera.ViewportSize
+		scale.Scale = math.clamp(
+			math.min((viewport.X - 24) / 390, (viewport.Y - 24) / 338),
+			0.4,
+			1
+		)
+	end
+end
+
+fitScreen()
+
+if Workspace.CurrentCamera then
+	connect(
+		Workspace.CurrentCamera:GetPropertyChangedSignal("ViewportSize"),
+		fitScreen
+	)
+end
+
+local header = Instance.new("Frame")
+header.Size = UDim2.new(1, 0, 0, 68)
+header.BackgroundTransparency = 1
+header.Active = true
+header.Parent = frame
+
+local logo = Instance.new("Frame")
+logo.Position = UDim2.fromOffset(16, 17)
+logo.Size = UDim2.fromOffset(34, 34)
+logo.BackgroundColor3 = colors.purple
+logo.BorderSizePixel = 0
+logo.Parent = header
+round(logo, 10)
+
+local logoText = label(logo, "T", 0, 0, 34, 34, 20, colors.background, true)
+logoText.TextXAlignment = Enum.TextXAlignment.Center
+
+label(header, "TBOD", 60, 15, 210, 23, 19, colors.text, true)
+label(header, "Automation dashboard", 60, 39, 230, 16, 11, colors.muted)
 
 local minimize = Instance.new("TextButton")
-minimize.Position = UDim2.new(1, -32, 0, 2)
-minimize.Size = UDim2.fromOffset(28, 26)
-minimize.BackgroundTransparency = 1
+minimize.Position = UDim2.new(1, -48, 0, 18)
+minimize.Size = UDim2.fromOffset(32, 32)
+minimize.BackgroundColor3 = colors.card
+minimize.BorderSizePixel = 0
 minimize.Text = "−"
 minimize.Font = Enum.Font.GothamBold
-minimize.TextSize = 20
-minimize.TextColor3 = Color3.new(1, 1, 1)
-minimize.Parent = frame
+minimize.TextSize = 21
+minimize.TextColor3 = colors.text
+minimize.Parent = header
+round(minimize, 10)
+
+local content = Instance.new("Frame")
+content.Position = UDim2.fromOffset(16, 76)
+content.Size = UDim2.fromOffset(358, 246)
+content.BackgroundTransparency = 1
+content.Parent = frame
+
+local function card(x, y, width, height)
+	local object = Instance.new("Frame")
+	object.Position = UDim2.fromOffset(x, y)
+	object.Size = UDim2.fromOffset(width, height)
+	object.BackgroundColor3 = colors.card
+	object.BorderSizePixel = 0
+	object.Parent = content
+	round(object, 14)
+	outline(object)
+	return object
+end
+
+local function toggleCard(x, heading, description, accent)
+	local object = card(x, 0, 174, 116)
+
+	local dot = Instance.new("Frame")
+	dot.Position = UDim2.fromOffset(14, 16)
+	dot.Size = UDim2.fromOffset(7, 7)
+	dot.BackgroundColor3 = accent
+	dot.BorderSizePixel = 0
+	dot.Parent = object
+	round(dot, 4)
+
+	label(object, heading, 28, 10, 133, 22, 13, colors.text, true)
+	label(object, description, 14, 36, 146, 17, 10, colors.muted)
+
+	local button = Instance.new("TextButton")
+	button.Position = UDim2.fromOffset(12, 69)
+	button.Size = UDim2.fromOffset(150, 34)
+	button.BackgroundColor3 = colors.background
+	button.BorderSizePixel = 0
+	button.Font = Enum.Font.GothamBold
+	button.TextSize = 11
+	button.TextColor3 = colors.muted
+	button.AutoButtonColor = false
+	button.Parent = object
+	round(button, 9)
+
+	connect(button.MouseEnter, function()
+		TweenService:Create(button, TweenInfo.new(0.12), {
+			BackgroundTransparency = 0.15,
+		}):Play()
+	end)
+
+	connect(button.MouseLeave, function()
+		TweenService:Create(button, TweenInfo.new(0.12), {
+			BackgroundTransparency = 0,
+		}):Play()
+	end)
+
+	return button, dot
+end
+
+local buyButton, buyDot = toggleCard(
+	0, "Auto Buy", "Buy without moving", colors.green
+)
+
+local rebirthButton, rebirthDot = toggleCard(
+	184, "Auto Rebirth", "Rebirth automatically", colors.purple
+)
+
+local triggerCard = card(0, 126, 358, 54)
+label(triggerCard, "REBIRTH TRIGGER", 14, 9, 145, 16, 9, colors.muted, true)
+label(triggerCard, "Choose when to rebirth", 14, 27, 175, 16, 10, colors.text)
+
+local modeButton = Instance.new("TextButton")
+modeButton.Position = UDim2.fromOffset(214, 11)
+modeButton.Size = UDim2.fromOffset(132, 32)
+modeButton.BackgroundColor3 = Color3.fromRGB(46, 37, 72)
+modeButton.BorderSizePixel = 0
+modeButton.Font = Enum.Font.GothamBold
+modeButton.TextSize = 11
+modeButton.TextColor3 = colors.purple
+modeButton.Parent = triggerCard
+round(modeButton, 9)
+
+local statusCard = card(0, 190, 358, 56)
+
+local statusDot = Instance.new("Frame")
+statusDot.Position = UDim2.fromOffset(14, 13)
+statusDot.Size = UDim2.fromOffset(6, 6)
+statusDot.BackgroundColor3 = colors.muted
+statusDot.BorderSizePixel = 0
+statusDot.Parent = statusCard
+round(statusDot, 3)
+
+label(statusCard, "ACTIVITY", 27, 7, 300, 17, 9, colors.muted, true)
+
+local status = label(statusCard, "Paused", 14, 25, 330, 24, 11, colors.text)
+status.TextWrapped = true
+status.TextYAlignment = Enum.TextYAlignment.Center
 
 local function refresh()
-	buyButton.Text = "Auto Buy: " .. (state.buy and "ON" or "OFF")
-	rebirthButton.Text = "Auto Rebirth: " .. (state.rebirth and "ON" or "OFF")
-	modeButton.Text = "Rebirth Trigger: " .. state.mode
+	buyButton.Text = state.buy and "ENABLED  •" or "ENABLE AUTO BUY"
+	rebirthButton.Text = state.rebirth and "ENABLED  •" or "ENABLE REBIRTH"
+	modeButton.Text = state.mode .. "  ↔"
 
 	buyButton.BackgroundColor3 = state.buy
-		and Color3.fromRGB(45, 155, 90)
-		or Color3.fromRGB(40, 40, 50)
+		and Color3.fromRGB(27, 66, 52) or colors.background
+	buyButton.TextColor3 = state.buy and colors.green or colors.muted
+	buyDot.BackgroundColor3 = state.buy and colors.green or colors.muted
 
 	rebirthButton.BackgroundColor3 = state.rebirth
-		and Color3.fromRGB(45, 155, 90)
-		or Color3.fromRGB(40, 40, 50)
+		and Color3.fromRGB(46, 37, 72) or colors.background
+	rebirthButton.TextColor3 = state.rebirth and colors.purple or colors.muted
+	rebirthDot.BackgroundColor3 = state.rebirth and colors.purple or colors.muted
+
+	statusDot.BackgroundColor3 = (state.buy or state.rebirth)
+		and colors.green or colors.muted
 end
 
 connect(buyButton.MouseButton1Click, function()
@@ -185,6 +341,7 @@ connect(buyButton.MouseButton1Click, function()
 		status.Text = "Executor missing firetouchinterest"
 		return
 	end
+
 	state.buy = not state.buy
 	refresh()
 end)
@@ -200,19 +357,27 @@ connect(modeButton.MouseButton1Click, function()
 end)
 
 local minimized = false
+local resizeTween
+
 connect(minimize.MouseButton1Click, function()
 	minimized = not minimized
-	frame.Size = UDim2.fromOffset(265, minimized and 30 or 190)
-	for _, object in ipairs({buyButton, rebirthButton, modeButton, status}) do
-		object.Visible = not minimized
-	end
+	content.Visible = not minimized
 	minimize.Text = minimized and "+" or "−"
+
+	if resizeTween then resizeTween:Cancel() end
+	resizeTween = TweenService:Create(
+		frame,
+		TweenInfo.new(0.18, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
+		{Size = UDim2.fromOffset(390, minimized and 68 or 338)}
+	)
+	resizeTween:Play()
 end)
 
 local dragging, dragStart, frameStart, touch
 
-connect(title.InputBegan, function(input)
+local function beginDrag(input)
 	if dragging then return end
+
 	if input.UserInputType == Enum.UserInputType.MouseButton1
 		or input.UserInputType == Enum.UserInputType.Touch then
 		dragging = true
@@ -220,10 +385,22 @@ connect(title.InputBegan, function(input)
 		frameStart = frame.Position
 		touch = input.UserInputType == Enum.UserInputType.Touch and input or nil
 	end
-end)
+end
+
+connect(header.InputBegan, beginDrag)
+
+-- Explicit drag surface above the title, leaving minimize accessible.
+local dragSurface = Instance.new("Frame")
+dragSurface.BackgroundTransparency = 1
+dragSurface.Size = UDim2.new(1, -56, 1, 0)
+dragSurface.Active = true
+dragSurface.ZIndex = 5
+dragSurface.Parent = header
+connect(dragSurface.InputBegan, beginDrag)
 
 connect(UIS.InputChanged, function(input)
 	if not dragging then return end
+
 	if (touch and input == touch)
 		or (not touch and input.UserInputType == Enum.UserInputType.MouseMovement) then
 		local delta = input.Position - dragStart
@@ -243,23 +420,26 @@ end)
 
 function state.stop()
 	state.running = false
+	if resizeTween then resizeTween:Cancel() end
+
 	for _, connection in ipairs(state.connections) do
 		connection:Disconnect()
 	end
+
 	gui:Destroy()
 	if env[KEY] == state then env[KEY] = nil end
 end
 
 refresh()
 
--- Tycoon lookup: second script's ownership checks,
--- followed by the first script's plot-sign lookup.
+-- Tycoon lookup
 local cachedTycoon
 local nextLookup = 0
 
 local function owns(object)
 	for _, name in ipairs({"Owner", "OwnerId", "Player", "User"}) do
 		local owner = object:FindFirstChild(name)
+
 		if owner then
 			if owner:IsA("ObjectValue") and owner.Value == player then
 				return true
@@ -275,6 +455,7 @@ local function owns(object)
 
 	local owner = object:GetAttribute("Owner")
 	local ownerId = object:GetAttribute("OwnerId")
+
 	return owner == player.Name or owner == player.UserId
 		or tostring(ownerId) == tostring(player.UserId)
 end
@@ -283,6 +464,7 @@ local function positionOf(object)
 	if object:IsA("Model") or object:IsA("BasePart") then
 		return object:GetPivot().Position
 	end
+
 	local part = object:FindFirstChildWhichIsA("BasePart", true)
 	return part and part.Position
 end
@@ -296,6 +478,7 @@ end
 
 local function tycoon()
 	local now = os.clock()
+
 	if now < nextLookup then
 		return cachedTycoon and cachedTycoon.Parent and cachedTycoon or nil
 	end
@@ -306,12 +489,15 @@ local function tycoon()
 	local folder = Workspace:FindFirstChild("Tycoons")
 		or Workspace:FindFirstChild("Tycoon")
 		or Workspace:FindFirstChild("Plots")
+
 	if not folder then return nil end
 
 	local candidates = {}
+
 	for _, object in ipairs(folder:GetChildren()) do
 		if buttonsOf(object) then
 			table.insert(candidates, object)
+
 			if owns(object) then
 				cachedTycoon = object
 				return object
@@ -325,11 +511,11 @@ local function tycoon()
 	if plots then
 		for _, plot in ipairs(plots:GetChildren()) do
 			local sign = plot:FindFirstChild("SignPlace")
-			local label = sign and sign:FindFirstChild("NameLabel", true)
+			local nameLabel = sign and sign:FindFirstChild("NameLabel", true)
 			local matches = owns(plot)
 
-			if label and label:IsA("TextLabel") then
-				local text = label.Text:match("^%s*(.-)%s*$"):lower()
+			if nameLabel and nameLabel:IsA("TextLabel") then
+				local text = nameLabel.Text:match("^%s*(.-)%s*$"):lower()
 				matches = matches or text == player.Name:lower()
 					or text == player.DisplayName:lower()
 			end
@@ -339,6 +525,7 @@ local function tycoon()
 					cachedTycoon = plot
 					return plot
 				end
+
 				plotPosition = positionOf(plot)
 				break
 			end
@@ -347,8 +534,10 @@ local function tycoon()
 
 	if plotPosition then
 		local shortest = math.huge
+
 		for _, object in ipairs(candidates) do
 			local position = positionOf(object)
+
 			if position then
 				local distance = (position - plotPosition).Magnitude
 				if distance < shortest then
@@ -363,23 +552,27 @@ local function tycoon()
 	return cachedTycoon
 end
 
+-- Auto Buy: simulated touches
 local buttonCache = setmetatable({}, {__mode = "k"})
 local retries = setmetatable({}, {__mode = "k"})
 
 local function details(object)
 	local cached = buttonCache[object]
+
 	if cached and cached.price.Parent and cached.part.Parent then
 		return cached
 	end
 
 	local display = object:FindFirstChild("PriceDisplay", true)
-	local label = display and (
+	local priceLabel = display and (
 		display:IsA("TextLabel") and display
 		or display:FindFirstChildWhichIsA("TextLabel", true)
 	)
-	if not label then return nil end
+
+	if not priceLabel then return nil end
 
 	local part
+
 	if object:IsA("BasePart") then
 		part = object
 	else
@@ -398,13 +591,14 @@ local function details(object)
 
 	if not part or not part:IsA("BasePart") then return nil end
 
-	cached = {price = label, part = part}
+	cached = {price = priceLabel, part = part}
 	buttonCache[object] = cached
 	return cached
 end
 
 local function eligible(object)
 	if not object:IsDescendantOf(Workspace) then return nil end
+
 	local data = details(object)
 	if not data or not visible(data.price) then return nil end
 
@@ -413,10 +607,12 @@ local function eligible(object)
 		nameDisplay:IsA("TextLabel") and nameDisplay
 		or nameDisplay:FindFirstChildWhichIsA("TextLabel", true)
 	)
+
 	if nameLabel and not nameLabel.Text:match("%S") then return nil end
 
 	local cost = number(data.price.Text)
 	if cost == nil then return nil end
+
 	return data, cost
 end
 
@@ -428,9 +624,9 @@ local function updateBuy()
 		return
 	end
 
-	local owned = tycoon()
-	local buttons = buttonsOf(owned)
+	local buttons = buttonsOf(tycoon())
 	local root = rootPart()
+
 	if not buttons or not root then
 		status.Text = "Waiting for tycoon / character"
 		return
@@ -441,12 +637,10 @@ local function updateBuy()
 	local selected, selectedData
 	local cheapest = math.huge
 
-	-- Every button gets its own retry timer; one failed button
-	-- cannot permanently block the others.
 	for _, object in ipairs(buttons:GetChildren()) do
 		local data, cost = eligible(object)
-		if data and cost <= balance
-			and now >= (retries[object] or 0) then
+
+		if data and cost <= balance and now >= (retries[object] or 0) then
 			if cost < cheapest then
 				selected, selectedData, cheapest = object, data, cost
 			end
@@ -465,13 +659,12 @@ local function updateBuy()
 	firetouchinterest(root, part, 0)
 	task.wait(0.05)
 
-	-- Always release a started touch, including when toggled off.
 	pcall(function()
 		firetouchinterest(root, part, 1)
 	end)
 end
 
--- Exact rebirth GUI paths from the supplied second script.
+-- Auto Rebirth
 local function rebirthObjects()
 	local pg = player:FindFirstChild("PlayerGui")
 	local rebirthFrame = path(pg, "Main", "Rebirth")
@@ -487,6 +680,7 @@ end
 
 local function complete(text)
 	text = tostring(text or ""):upper()
+
 	if text:find("COMPLETE", 1, true)
 		or text:find("MAX", 1, true)
 		or text:find("DONE", 1, true) then
@@ -497,21 +691,24 @@ local function complete(text)
 	if percent and percent >= 100 then return true end
 
 	local currentText, goalText = text:match("(.-)%s*/%s*(.+)")
+
 	if currentText and goalText then
 		local current, goal = number(currentText), number(goalText)
+
 		if current and goal and goal > 0 then
 			return current >= goal or cash() >= goal
 		end
 	end
+
 	return false
 end
 
 local function essenceCapped()
-	local pg = player:FindFirstChild("PlayerGui")
 	local notice = path(
-		pg, "System", "Notifications", "NotiHolder", "EssenceCappedTemp"
+		player:FindFirstChild("PlayerGui"),
+		"System", "Notifications", "NotiHolder", "EssenceCappedTemp"
 	)
-	-- The second script uses this temporary notification's existence.
+
 	if not notice then return false end
 
 	for _, object in ipairs(notice:GetDescendants()) do
@@ -521,6 +718,7 @@ local function essenceCapped()
 			return true
 		end
 	end
+
 	return false
 end
 
@@ -529,8 +727,10 @@ local function ready()
 
 	local pg = player:FindFirstChild("PlayerGui")
 	local progress = path(pg, "System", "RebirthProgress", "Progress")
-	local label = progress and progress:FindFirstChildWhichIsA("TextLabel", true)
-	if label and complete(label.Text) then return true end
+	local progressLabel = progress
+		and progress:FindFirstChildWhichIsA("TextLabel", true)
+
+	if progressLabel and complete(progressLabel.Text) then return true end
 
 	local objects = rebirthObjects()
 	if objects.progress and complete(objects.progress.Text) then return true end
@@ -538,6 +738,7 @@ local function ready()
 	local notice = path(
 		pg, "System", "Notifications", "NotiHolder", "RebirthNotification"
 	)
+
 	if notice then
 		for _, object in ipairs(notice:GetDescendants()) do
 			if (object:IsA("TextLabel") or object:IsA("TextButton"))
@@ -546,6 +747,7 @@ local function ready()
 			end
 		end
 	end
+
 	return false
 end
 
@@ -554,57 +756,82 @@ local function activate(button)
 		return false
 	end
 
-	-- Use one activation method to avoid executing a handler twice.
-	if type(firesignal) == "function" then
-		local signalName = state.confirmAttempt % 2 == 1
-			and "Activated" or "MouseButton1Click"
-		local success = pcall(function()
-			firesignal(button[signalName])
-		end)
-		if success then return true end
-	end
-
+	-- Try actual connected callbacks instead of returning after firesignal.
 	if type(getconnections) == "function" then
 		for _, signalName in ipairs({"Activated", "MouseButton1Click"}) do
 			local success, connections = pcall(function()
 				return getconnections(button[signalName])
 			end)
 
-			if success then
-				local fired = false
+			if success and type(connections) == "table" then
+				local invoked = false
+
 				for _, connection in ipairs(connections) do
-					if connection.Enabled ~= false then
-						local ok = pcall(function()
-							if connection.Fire then
-								connection:Fire()
-							elseif connection.Function then
-								task.spawn(connection.Function)
-							else
-								error("No callable connection")
+					local ok, callback = pcall(function()
+						if connection.Enabled == false then return nil end
+						return connection.Function
+					end)
+
+					if ok and type(callback) == "function" then
+						invoked = true
+
+						task.spawn(function()
+							local worked, err = pcall(callback)
+							if not worked then
+								warn("[TBOD Rebirth callback]", err)
 							end
 						end)
-						fired = fired or ok
 					end
 				end
-				if fired then return true end
+
+				if invoked then return true end
 			end
 		end
 	end
 
+	-- Fall back to an actual mouse click.
+	local camera = Workspace.CurrentCamera
+	if not camera then return false end
+
 	local position = button.AbsolutePosition + button.AbsoluteSize / 2
 	local screen = button:FindFirstAncestorWhichIsA("ScreenGui")
+
 	if screen and not screen.IgnoreGuiInset then
 		local inset = game:GetService("GuiService"):GetGuiInset()
 		position += inset
 	end
 
-	return pcall(function()
+	local viewport = camera.ViewportSize
+
+	if button.AbsoluteSize.X <= 0 or button.AbsoluteSize.Y <= 0
+		or position.X < 0 or position.Y < 0
+		or position.X >= viewport.X or position.Y >= viewport.Y then
+		warn("[TBOD Rebirth] Confirmation button is outside the screen")
+		return false
+	end
+
+	local success, err = pcall(function()
 		local input = game:GetService("VirtualInputManager")
+
 		input:SendMouseMoveEvent(position.X, position.Y, game)
-		input:SendMouseButtonEvent(position.X, position.Y, 0, true, game, 0)
-		task.wait(0.08)
-		input:SendMouseButtonEvent(position.X, position.Y, 0, false, game, 0)
+		task.wait(0.15)
+
+		input:SendMouseButtonEvent(
+			position.X, position.Y, 0, true, game, 0
+		)
+
+		task.wait(0.1)
+
+		input:SendMouseButtonEvent(
+			position.X, position.Y, 0, false, game, 0
+		)
 	end)
+
+	if not success then
+		warn("[TBOD Rebirth mouse click]", err)
+	end
+
+	return success
 end
 
 local function startRebirth()
@@ -616,13 +843,20 @@ local function startRebirth()
 	task.spawn(function()
 		local success, err = pcall(function()
 			status.Text = "Opening rebirth..."
-
 			local objects = rebirthObjects()
-			if not visible(objects.frame) then
-				local click = path(Workspace, "Obelisk", "RebirthButton", "Click")
-				local detector = click and click:FindFirstChildOfClass("ClickDetector")
 
-				if not detector then error("Rebirth ClickDetector not found") end
+			if not visible(objects.frame) then
+				local click = path(
+					Workspace, "Obelisk", "RebirthButton", "Click"
+				)
+
+				local detector = click
+					and click:FindFirstChildOfClass("ClickDetector")
+
+				if not detector then
+					error("Rebirth ClickDetector not found")
+				end
+
 				if type(fireclickdetector) ~= "function" then
 					error("Executor missing fireclickdetector")
 				end
@@ -631,9 +865,11 @@ local function startRebirth()
 			end
 
 			local deadline = os.clock() + 4
+
 			repeat
 				if not state.running or not state.rebirth then return end
 				objects = rebirthObjects()
+
 				if visible(objects.button) then break end
 				task.wait(0.15)
 			until os.clock() >= deadline
@@ -642,7 +878,10 @@ local function startRebirth()
 				error("Exact rebirth confirmation button not available")
 			end
 
-			state.confirmAttempt = (state.confirmAttempt or 0) + 1
+			task.wait(0.35)
+			if not state.running or not state.rebirth then return end
+
+			objects = rebirthObjects()
 			status.Text = "Confirming rebirth..."
 
 			if not activate(objects.button) then
@@ -656,12 +895,14 @@ local function startRebirth()
 			table.clear(retries)
 
 			objects = rebirthObjects()
+
 			status.Text = visible(objects.frame)
 				and "Confirmation sent; retrying if needed"
 				or "Rebirth confirmation sent"
 		end)
 
 		state.busy = false
+
 		if not success and state.running then
 			status.Text = tostring(err):match("[^\n]+") or "Rebirth failed"
 			warn("[TBOD Rebirth]", err)
@@ -685,6 +926,7 @@ task.spawn(function()
 			if state.rebirth and not state.busy
 				and now - lastRebirthCheck >= 0.3 then
 				lastRebirthCheck = now
+
 				if ready() then startRebirth() end
 			end
 
@@ -699,6 +941,7 @@ task.spawn(function()
 
 		if not success and state.running then
 			status.Text = "Error; retrying (see console)"
+
 			if os.clock() - lastWarning >= 5 then
 				lastWarning = os.clock()
 				warn("[TBOD Automation]", err)
