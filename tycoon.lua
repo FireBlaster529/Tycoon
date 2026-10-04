@@ -110,7 +110,7 @@ end
 local buyButton,buyDot=toggleCard(0,'Auto Buy','Buy without moving',C.green)
 local rebirthButton,rebirthDot=toggleCard(184,'Auto Rebirth','Wait for required cash',C.purple)
 local triggerCard=card(0,126,358,54)
-label(triggerCard,'REBIRTH TRIGGER',14,9,145,16,9,C.muted,true); label(triggerCard,'Choose when to rebirth',14,27,175,16,10,C.text)
+label(triggerCard,'REBIRTH TRIGGER',14,9,145,16,9,C.muted,true); local readinessLabel=label(triggerCard,'Checking progress...',14,27,190,16,9,C.text)
 local modeButton=Instance.new('TextButton'); modeButton.Position=UDim2.fromOffset(214,11); modeButton.Size=UDim2.fromOffset(132,32); modeButton.BackgroundColor3=Color3.fromRGB(46,37,72); modeButton.BorderSizePixel=0; modeButton.Font=Enum.Font.GothamBold; modeButton.TextSize=11; modeButton.TextColor3=C.purple; modeButton.Parent=triggerCard; round(modeButton,9)
 local statusCard=card(0,190,358,56)
 local statusDot=Instance.new('Frame'); statusDot.Position=UDim2.fromOffset(14,13); statusDot.Size=UDim2.fromOffset(6,6); statusDot.BackgroundColor3=C.muted; statusDot.BorderSizePixel=0; statusDot.Parent=statusCard; round(statusDot,3)
@@ -301,7 +301,7 @@ local function goalFrom(labelObject)
 end
 local function progressSaysReady(labelObject)
     if not labelObject or not labelObject:IsA('TextLabel') then return false end
-    local text=labelObject.Text:upper():match('^%s*(.-)%s*$')
+    local text=labelObject.Text:gsub('<[^>]->',''):upper():match('^%s*(.-)%s*$')
     -- Only the game's exact rebirth progress labels are used here.
     -- Arbitrary notifications cannot trigger rebirth.
     if text:find('NOT COMPLETE',1,true) or text:find('INCOMPLETE',1,true)
@@ -309,7 +309,7 @@ local function progressSaysReady(labelObject)
     local percent=tonumber(text:match('(%d+%.?%d*)%%'))
     if percent then return percent>=100 end
     for word in text:gmatch('%a+') do
-        if word=='COMPLETE' or word=='COMPLETED' or word=='MAX' or word=='DONE' then
+        if word=='COMPLETE' or word=='COMPLETED' or word=='MAX' or word=='DONE' or word=='READY' then
             return true
         end
     end
@@ -318,14 +318,44 @@ end
 local function readGoal()
     local pg=player:FindFirstChild('PlayerGui')
     local progress=path(pg,'System','RebirthProgress','Progress')
-    local progressLabel=progress and progress:FindFirstChildWhichIsA('TextLabel',true)
-    local menuProgress=rebirthObjects().progress
-    local goal=goalFrom(progressLabel) or goalFrom(menuProgress)
-    if goal then cachedGoal=goal; return goal end
-    -- Zero is a readiness token, not a guessed cash requirement.
-    -- It allows players already COMPLETE at startup to open the menu.
-    if progressSaysReady(progressLabel) or progressSaysReady(menuProgress) then return 0 end
-    return cachedGoal
+    local progressLabel=progress and (progress:FindFirstChild('TextLabel') or progress:FindFirstChildWhichIsA('TextLabel',true))
+    local objects=rebirthObjects()
+    -- The live progress display takes priority over a hidden menu's stale goal.
+    if progressSaysReady(progressLabel) then
+        state.readiness='Ready: live progress complete'
+        readinessLabel.Text='Ready to rebirth'
+        return 0
+    end
+    local goal=goalFrom(progressLabel)
+    if goal then
+        cachedGoal=goal
+        state.readiness='Cash '..tostring(cash())..' / goal '..tostring(goal)
+        readinessLabel.Text=cash()>=goal and 'Cash goal reached' or 'Waiting for required cash'
+        return goal
+    end
+    -- A visible menu is the next reliable source. Do not trust a hidden
+    -- menu's COMPLETE label as proof that the current rebirth is ready.
+    if visible(objects.frame) and progressSaysReady(objects.progress) then
+        state.readiness='Ready: visible rebirth menu complete'
+        readinessLabel.Text='Ready to rebirth'
+        return 0
+    end
+    goal=goalFrom(objects.progress)
+    if goal then
+        cachedGoal=goal
+        state.readiness='Menu goal '..tostring(goal)..'; cash '..tostring(cash())
+        readinessLabel.Text=cash()>=goal and 'Cash goal reached' or 'Waiting for required cash'
+        return goal
+    end
+    if cachedGoal then
+        state.readiness='Cached goal '..tostring(cachedGoal)..'; cash '..tostring(cash())
+        readinessLabel.Text=cash()>=cachedGoal and 'Cash goal reached' or 'Waiting for required cash'
+        return cachedGoal
+    end
+    local raw=progressLabel and progressLabel.Text or '(label missing)'
+    state.readiness='Cannot read rebirth readiness. Live text: '..tostring(raw)
+    readinessLabel.Text='Progress: '..tostring(raw):gsub('<[^>]->',''):sub(1,36)
+    return nil
 end
 local function essenceCapped()
     local notice=path(player:FindFirstChild('PlayerGui'),'System','Notifications','NotiHolder','EssenceCappedTemp')
@@ -445,7 +475,8 @@ local function startRebirth(goal)
             if not activeRebirth() then return end
             -- Re-check the exact menu goal before clicking.
             local menuGoal=goalFrom(rebirthObjects().progress)
-            if menuGoal then goal=menuGoal; cachedGoal=menuGoal end
+            -- Keep a live COMPLETE readiness token authoritative.
+            if menuGoal and goal>0 then goal=menuGoal; cachedGoal=menuGoal end
             if cash()<goal then status.Text='Waiting for required cash'; return end
             if state.mode=='Essence Cap' and not essenceCapped() then status.Text='Waiting for essence cap'; return end
             local button=rebirthObjects().button
@@ -502,6 +533,12 @@ task.spawn(function()
     while state.running do
         local ok,err=pcall(function()
             local goal=readGoal()
+            local readinessKey=(goal==0 and 'complete') or (goal and (cash()>=goal and 'cash-ready' or 'cash-wait')) or 'unknown'
+            readinessKey=readinessKey..':'..state.mode
+            if state.rebirth and readinessKey~=state.lastReadinessLog then
+                state.lastReadinessLog=readinessKey
+                print('[TBOD Readiness] '..tostring(state.readiness)..'; mode='..state.mode)
+            end
             if state.rebirth and not state.busy then
                 if goal and cash()>=goal and (state.mode=='Ready' or essenceCapped()) then
                     startRebirth(goal)
