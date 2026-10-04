@@ -255,9 +255,20 @@ end
 -- Rebirth readiness: required cash only, never arbitrary notification text.
 local cachedGoal
 local function rebirthObjects()
-    local pg=player:FindFirstChild('PlayerGui'); local menu=path(pg,'Main','Rebirth'); local inner=path(menu,'Main','Inner')
+    local pg=player:FindFirstChild('PlayerGui')
+    local menu=path(pg,'Main','Rebirth')
+    local inner=path(menu,'Main','Inner')
     local progress=inner and inner:FindFirstChild('Progress')
-    return {frame=menu,button=inner and inner:FindFirstChild('Rebirth'),progress=progress and progress:FindFirstChildWhichIsA('TextLabel',true)}
+    local target=inner and inner:FindFirstChild('Rebirth')
+    local button
+    if target then
+        if target:IsA('GuiButton') then button=target else
+            for _,object in ipairs(target:GetDescendants()) do
+                if object:IsA('GuiButton') and visible(object) then button=object; break end
+            end
+        end
+    end
+    return {frame=menu,button=button,target=target,progress=progress and progress:FindFirstChildWhichIsA('TextLabel',true)}
 end
 local function goalFrom(labelObject)
     if not labelObject or not labelObject:IsA('TextLabel') then return nil end
@@ -309,41 +320,64 @@ local function rebirthConfirmed(beforeCount,beforeCash,oldGoal)
         and current~=nil and goal~=nil and current<goal
         and not visible(rebirthObjects().frame)
 end
-local function mouseClick(button)
+local function mouseClick(button, addInset)
     if not button or not button:IsA('GuiButton') or not visible(button) then return false end
     local camera=Workspace.CurrentCamera; if not camera then return false end
     local position=button.AbsolutePosition+button.AbsoluteSize/2
-    local screen=button:FindFirstAncestorWhichIsA('ScreenGui')
-    if screen and not screen.IgnoreGuiInset then local inset=game:GetService('GuiService'):GetGuiInset(); position+=inset end
+    if addInset then local inset=game:GetService('GuiService'):GetGuiInset(); position=position+inset end
     local viewport=camera.ViewportSize
     if button.AbsoluteSize.X<=0 or button.AbsoluteSize.Y<=0 or position.X<0 or position.Y<0 or position.X>=viewport.X or position.Y>=viewport.Y then return false end
-    return pcall(function()
+    -- Hide this dashboard briefly so it cannot intercept the confirmation click.
+    local enabled=gui.Enabled
+    gui.Enabled=false
+    local ok,err=pcall(function()
         local input=game:GetService('VirtualInputManager')
         input:SendMouseMoveEvent(position.X,position.Y,game); task.wait(0.15)
-        input:SendMouseButtonEvent(position.X,position.Y,0,true,game,0); task.wait(0.1)
+        input:SendMouseButtonEvent(position.X,position.Y,0,true,game,0); task.wait(0.15)
         input:SendMouseButtonEvent(position.X,position.Y,0,false,game,0)
     end)
+    if state.running then gui.Enabled=enabled end
+    if not ok then warn('[TBOD Rebirth mouse]',err) end
+    return ok
 end
-local function connectedClick(button)
+local function connectedClick(button, signalName)
     if not button or not button:IsA('GuiButton') or not visible(button) then return false end
-    if type(getconnections)=='function' then
-        for _,signalName in ipairs({'MouseButton1Click','Activated'}) do
-            local ok,connections=pcall(function() return getconnections(button[signalName]) end)
-            if ok and type(connections)=='table' then
-                local invoked=false
-                for _,connection in ipairs(connections) do
-                    local success,callback=pcall(function() if connection.Enabled==false then return nil end; return connection.Function end)
-                    if success and type(callback)=='function' then
-                        invoked=true
-                        task.spawn(function() local worked,err=pcall(callback); if not worked then warn('[TBOD Rebirth callback]',err) end end)
-                    end
-                end
-                if invoked then return true end
+    if type(getconnections)~='function' then return false end
+    local ok,connections=pcall(function() return getconnections(button[signalName]) end)
+    if not ok or type(connections)~='table' then return false end
+    warn('[TBOD Rebirth] '..signalName..' connections: '..tostring(#connections))
+    local invoked=false
+    for _,connection in ipairs(connections) do
+        local worked,result=pcall(function()
+            if connection.Enabled==false then return false end
+            if type(connection.Fire)=='function' then
+                if signalName=='Activated' then connection:Fire(nil,1) else connection:Fire() end
+                return true
             end
-        end
+            local callback=connection.Function
+            if type(callback)=='function' then
+                task.spawn(function()
+                    local success,err
+                    if signalName=='Activated' then success,err=pcall(callback,nil,1) else success,err=pcall(callback) end
+                    if not success then warn('[TBOD Rebirth callback]',err) end
+                end)
+                return true
+            end
+            return false
+        end)
+        if not worked then warn('[TBOD Rebirth connection]',result) end
+        invoked=invoked or (worked and result==true)
     end
-    if type(firesignal)=='function' then return pcall(function() firesignal(button.MouseButton1Click) end) end
-    return false
+    return invoked
+end
+local function signalClick(button, signalName)
+    if not button or not visible(button) or type(firesignal)~='function' then return false end
+    local ok,err=pcall(function()
+        if signalName=='Activated' then firesignal(button.Activated,nil,1)
+        else firesignal(button.MouseButton1Click) end
+    end)
+    if not ok then warn('[TBOD Rebirth signal]',err) end
+    return ok
 end
 local function activeRebirth() return state.running and state.rebirth end
 local function waitConfirmation(beforeCount,beforeCash,oldGoal,duration)
@@ -378,7 +412,11 @@ local function startRebirth(goal)
                 objects=rebirthObjects(); if visible(objects.button) then break end
                 task.wait(0.15)
             until os.clock()>=deadline
-            if not objects.button or not objects.button:IsA('GuiButton') or not visible(objects.button) then error('Exact confirmation button unavailable') end
+            if not objects.button or not visible(objects.button) then
+                local target=objects.target
+                warn('[TBOD Rebirth] Inner.Rebirth: '..(target and (target:GetFullName()..' ['..target.ClassName..']') or 'missing'))
+                error('No visible GuiButton inside exact rebirth control')
+            end
             task.wait(0.4)
             if not activeRebirth() then return end
             -- Re-check the exact menu goal before clicking.
@@ -386,13 +424,37 @@ local function startRebirth(goal)
             if menuGoal then goal=menuGoal; cachedGoal=menuGoal end
             if cash()<goal then status.Text='Waiting for required cash'; return end
             if state.mode=='Essence Cap' and not essenceCapped() then status.Text='Waiting for essence cap'; return end
-            status.Text='Clicking rebirth confirmation'
-            mouseClick(rebirthObjects().button)
-            local confirmed=waitConfirmation(beforeCount,beforeCash,goal,2.5)
-            if not confirmed and activeRebirth() then
-                status.Text='Trying connected confirmation handler'
-                connectedClick(rebirthObjects().button)
-                confirmed=waitConfirmation(beforeCount,beforeCash,goal,3)
+            local button=rebirthObjects().button
+            warn('[TBOD Rebirth] Confirmation target: '..button:GetFullName()..' ['..button.ClassName..']')
+            local methods={
+                {name='mouse / standard inset',run=function(b)
+                    local screen=b:FindFirstAncestorWhichIsA('ScreenGui')
+                    return mouseClick(b,screen and not screen.IgnoreGuiInset)
+                end},
+                {name='MouseButton1Click connection',run=function(b) return connectedClick(b,'MouseButton1Click') end},
+                {name='Activated connection',run=function(b) return connectedClick(b,'Activated') end},
+                {name='mouse / alternate inset',run=function(b)
+                    local screen=b:FindFirstAncestorWhichIsA('ScreenGui')
+                    return mouseClick(b,not (screen and not screen.IgnoreGuiInset))
+                end},
+                {name='MouseButton1Click signal',run=function(b) return signalClick(b,'MouseButton1Click') end},
+                {name='Activated signal',run=function(b) return signalClick(b,'Activated') end},
+            }
+            local confirmed=false
+            for _,method in ipairs(methods) do
+                if not activeRebirth() then break end
+                if rebirthConfirmed(beforeCount,beforeCash,goal) then confirmed=true; break end
+                -- Stop clicking after the menu closes; allow the reset to finish.
+                button=rebirthObjects().button
+                if not visible(button) then
+                    confirmed=waitConfirmation(beforeCount,beforeCash,goal,5)
+                    break
+                end
+                status.Text='Confirming: '..method.name
+                warn('[TBOD Rebirth] Trying '..method.name)
+                local sent=method.run(button)
+                if sent then confirmed=waitConfirmation(beforeCount,beforeCash,goal,3) end
+                if confirmed then break end
             end
             if confirmed then
                 cachedGoal=nil; nextLookup=0; table.clear(retries)
