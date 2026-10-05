@@ -1,4 +1,4 @@
--- TBOD Automation: simulated-touch buying + cursor-free rebirth attempts
+-- TBOD Automation: simulated-touch buying + cursor-free Volt rebirth attempts
 -- Drag the header. Click +/- to minimize. Both features start OFF.
 local Players = game:GetService('Players')
 local Workspace = game:GetService('Workspace')
@@ -394,7 +394,7 @@ local function rebirthConfirmed(beforeCount,beforeCash,oldGoal)
         and current~=nil and goal~=nil and current<goal
         and not visible(rebirthObjects().frame)
 end
-local function connectedClick(button, signalName)
+local function connectedClick(button, signalName, direct)
     if not button or not button:IsA('GuiButton') or not visible(button) then return false end
     if type(getconnections)~='function' then return false end
     local ok,connections=pcall(function() return getconnections(button[signalName]) end)
@@ -404,7 +404,7 @@ local function connectedClick(button, signalName)
     for _,connection in ipairs(connections) do
         local worked,result=pcall(function()
             if connection.Enabled==false then return false end
-            if type(connection.Fire)=='function' then
+            if not direct and type(connection.Fire)=='function' then
                 if signalName=='Activated' then connection:Fire(nil,1) else connection:Fire() end
                 return true
             end
@@ -425,13 +425,24 @@ local function connectedClick(button, signalName)
     return invoked
 end
 local function signalClick(button, signalName)
-    if not button or not visible(button) or type(firesignal)~='function' then return false end
+    if not button or not button:IsA('GuiButton') or not visible(button) or type(firesignal)~='function' then return false end
     local ok,err=pcall(function()
         if signalName=='Activated' then firesignal(button.Activated,nil,1)
-        else firesignal(button.MouseButton1Click) end
+        elseif signalName=='MouseButton1Down' or signalName=='MouseButton1Up' then
+            local position=button.AbsolutePosition+button.AbsoluteSize/2
+            firesignal(button[signalName],position.X,position.Y)
+        else firesignal(button[signalName]) end
     end)
-    if not ok then warn('[TBOD Rebirth signal]',err) end
+    if not ok then warn('[TBOD Rebirth signal]',signalName,err) end
     return ok
+end
+local function pressReleaseClick(button)
+    -- These are GUI signals only; they do not send mouse input or move the cursor.
+    local down=signalClick(button,'MouseButton1Down')
+    task.wait(0.1)
+    if not state.running or not state.rebirth or not visible(button) then return down end
+    local up=signalClick(button,'MouseButton1Up')
+    return down or up
 end
 local function activeRebirth() return state.running and state.rebirth end
 local function waitConfirmation(beforeCount,beforeCash,oldGoal,duration)
@@ -480,13 +491,17 @@ local function startRebirth(goal)
             if cash()<goal then status.Text='Waiting for required cash'; return end
             if state.mode=='Essence Cap' and not essenceCapped() then status.Text='Waiting for essence cap'; return end
             local button=rebirthObjects().button
+            if not button or not visible(button) then error('Rebirth button disappeared before confirmation') end
             warn('[TBOD Rebirth] Confirmation target: '..button:GetFullName()..' ['..button.ClassName..']')
-            -- Cursor-free activation only: no VirtualInputManager mouse events.
+            -- Volt's documented signal/connection APIs do not need OS mouse input.
             local methods={
-                {name='MouseButton1Click connection',run=function(b) return connectedClick(b,'MouseButton1Click') end},
-                {name='Activated connection',run=function(b) return connectedClick(b,'Activated') end},
                 {name='MouseButton1Click signal',run=function(b) return signalClick(b,'MouseButton1Click') end},
                 {name='Activated signal',run=function(b) return signalClick(b,'Activated') end},
+                {name='MouseButton1Click connection',run=function(b) return connectedClick(b,'MouseButton1Click') end},
+                {name='Activated connection',run=function(b) return connectedClick(b,'Activated') end},
+                {name='MouseButton1Click callback',run=function(b) return connectedClick(b,'MouseButton1Click',true) end},
+                {name='Activated callback',run=function(b) return connectedClick(b,'Activated',true) end},
+                {name='GUI press/release signals',run=pressReleaseClick},
             }
             local confirmed=false
             for _,method in ipairs(methods) do
@@ -500,8 +515,9 @@ local function startRebirth(goal)
                 end
                 status.Text='Confirming: '..method.name
                 warn('[TBOD Rebirth] Trying '..method.name)
-                local sent=method.run(button)
-                if sent then confirmed=waitConfirmation(beforeCount,beforeCash,goal,3) end
+                local worked,sent=pcall(method.run,button)
+                if not worked then warn('[TBOD Rebirth method]',method.name,sent) end
+                if worked and sent then confirmed=waitConfirmation(beforeCount,beforeCash,goal,3) end
                 if confirmed then break end
             end
             if confirmed then
@@ -509,11 +525,11 @@ local function startRebirth(goal)
                 status.Text='Rebirth verified'
                 task.wait(1)
             elseif activeRebirth() then
-                error('Cursor-free rebirth not verified; executor callbacks/signals may be unsupported')
+                error('Cursor-free rebirth not verified; send the TBOD Rebirth console messages')
             end
         end)
         state.busy=false
-        if not success and state.running then status.Text='Cursor-free confirmation failed; see console'; warn('[TBOD Rebirth]',err) end
+        if not success and state.running then status.Text='Rebirth confirmation failed; see console'; warn('[TBOD Rebirth]',err) end
     end)
 end
 connect(player.CharacterAdded,function() nextLookup=0; table.clear(retries) end)
