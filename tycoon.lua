@@ -69,13 +69,13 @@ local function label(parent,text,x,y,w,h,size,color,bold)
     obj.Font=bold and Enum.Font.GothamBold or Enum.Font.Gotham; obj.Text=text; obj.TextSize=size; obj.TextColor3=color or C.text; obj.TextXAlignment=Enum.TextXAlignment.Left; obj.Parent=parent
     return obj
 end
-local frame=Instance.new('Frame'); frame.Size=UDim2.fromOffset(390,338); frame.Position=UDim2.fromOffset(24,120); frame.BackgroundColor3=C.bg; frame.BorderSizePixel=0; frame.Active=true; frame.ClipsDescendants=true; frame.Parent=gui
+local frame=Instance.new('Frame'); frame.Size=UDim2.fromOffset(390,414); frame.Position=UDim2.fromOffset(24,120); frame.BackgroundColor3=C.bg; frame.BorderSizePixel=0; frame.Active=true; frame.ClipsDescendants=true; frame.Parent=gui
 round(frame,18); outline(frame)
 local scale=Instance.new('UIScale'); scale.Parent=frame
 local cameraConnection
 local function fitScreen()
     local camera=Workspace.CurrentCamera
-    if camera then local v=camera.ViewportSize; scale.Scale=math.clamp(math.min((v.X-24)/390,(v.Y-24)/338),0.4,1) end
+    if camera then local v=camera.ViewportSize; scale.Scale=math.clamp(math.min((v.X-24)/390,(v.Y-24)/414),0.4,1) end
 end
 local function hookCamera()
     if cameraConnection then cameraConnection:Disconnect() end
@@ -88,7 +88,7 @@ local logo=Instance.new('Frame'); logo.Position=UDim2.fromOffset(16,17); logo.Si
 local logoText=label(logo,'T',0,0,34,34,20,C.bg,true); logoText.TextXAlignment=Enum.TextXAlignment.Center
 label(header,'TBOD',60,15,210,23,19,C.text,true); label(header,'Automation dashboard',60,39,230,16,11,C.muted)
 local minimize=Instance.new('TextButton'); minimize.Position=UDim2.new(1,-48,0,18); minimize.Size=UDim2.fromOffset(32,32); minimize.BackgroundColor3=C.card; minimize.BorderSizePixel=0; minimize.Text='−'; minimize.Font=Enum.Font.GothamBold; minimize.TextSize=21; minimize.TextColor3=C.text; minimize.Parent=header; round(minimize,10)
-local content=Instance.new('Frame'); content.Position=UDim2.fromOffset(16,76); content.Size=UDim2.fromOffset(358,246); content.BackgroundTransparency=1; content.Parent=frame
+local content=Instance.new('Frame'); content.Position=UDim2.fromOffset(16,76); content.Size=UDim2.fromOffset(358,322); content.BackgroundTransparency=1; content.Parent=frame
 local function card(x,y,w,h)
     local obj=Instance.new('Frame'); obj.Position=UDim2.fromOffset(x,y); obj.Size=UDim2.fromOffset(w,h); obj.BackgroundColor3=C.card; obj.BorderSizePixel=0; obj.Parent=content; round(obj,14); outline(obj); return obj
 end
@@ -116,6 +116,11 @@ local statusCard=card(0,190,358,56)
 local statusDot=Instance.new('Frame'); statusDot.Position=UDim2.fromOffset(14,13); statusDot.Size=UDim2.fromOffset(6,6); statusDot.BackgroundColor3=C.muted; statusDot.BorderSizePixel=0; statusDot.Parent=statusCard; round(statusDot,3)
 label(statusCard,'ACTIVITY',27,7,300,17,9,C.muted,true)
 local status=label(statusCard,'Paused',14,25,330,24,11,C.text); status.TextWrapped=true
+local bitTimerCard=card(0,256,358,66)
+label(bitTimerCard,'NEXT BITS',14,8,190,16,9,C.muted,true)
+local bitTimerNote=label(bitTimerCard,'Open generator once to sync',14,30,224,22,10,C.muted)
+local bitTimerLabel=label(bitTimerCard,'--:--',242,16,102,34,24,C.green,true)
+bitTimerLabel.TextXAlignment=Enum.TextXAlignment.Right
 local function refresh()
     buyButton.Text=state.buy and 'ENABLED  •' or 'ENABLE AUTO BUY'
     rebirthButton.Text=state.rebirth and 'ENABLED  •' or 'ENABLE REBIRTH'
@@ -136,7 +141,7 @@ local minimized,resizeTween=false,nil
 connect(minimize.MouseButton1Click,function()
     minimized=not minimized; content.Visible=not minimized; minimize.Text=minimized and '+' or '−'
     if resizeTween then resizeTween:Cancel() end
-    resizeTween=TweenService:Create(frame,TweenInfo.new(0.18,Enum.EasingStyle.Quad,Enum.EasingDirection.Out),{Size=UDim2.fromOffset(390,minimized and 68 or 338)}); resizeTween:Play()
+    resizeTween=TweenService:Create(frame,TweenInfo.new(0.18,Enum.EasingStyle.Quad,Enum.EasingDirection.Out),{Size=UDim2.fromOffset(390,minimized and 68 or 414)}); resizeTween:Play()
 end)
 local dragging,dragStart,frameStart,touch
 local dragSurface=Instance.new('Frame'); dragSurface.BackgroundTransparency=1; dragSurface.Size=UDim2.new(1,-56,1,0); dragSurface.Active=true; dragSurface.ZIndex=5; dragSurface.Parent=header
@@ -162,6 +167,62 @@ function state.stop()
     gui:Destroy(); if env[KEY]==state then env[KEY]=nil end
 end
 refresh()
+-- Bit generator: sync to the game's label, then count down independently of the popup.
+local function bitTimerSeconds(text)
+    text=tostring(text or ''):gsub('<[^>]->',''):match('^%s*(.-)%s*$')
+    local minutes,seconds=text:match('^(%d+):(%d%d)$')
+    minutes,seconds=tonumber(minutes),tonumber(seconds)
+    if not minutes or not seconds or seconds>=60 then return nil end
+    local total=minutes*60+seconds
+    if total>1800 then return nil end
+    return total
+end
+local function bitTimerRemaining(deadline,now)
+    local left=math.ceil(deadline-now)
+    if left>=0 then return left,false end
+    -- Automatic generation repeats every 30 minutes. Later cycles are estimates
+    -- until the game updates its label again; zero itself does not prove a payout.
+    local cycles=math.floor((now-deadline)/1800)+1
+    return math.ceil(deadline+cycles*1800-now),true
+end
+task.spawn(function()
+    local source,lastText,wasVisible,deadline,lastSync=nil,nil,false,nil,nil
+    local lastWarning=-math.huge
+    while state.running do
+        local ok,err=pcall(function()
+            local current=path(player:FindFirstChild('PlayerGui'),'System','BitsGenerator','Holder','Output','Stats','Time')
+            local now=os.clock()
+            if current~=source then
+                source=current; lastText=nil; wasVisible=false
+            end
+            if source and source:IsA('TextLabel') then
+                local text=source.Text
+                local shown=visible(source)
+                local seconds=bitTimerSeconds(text)
+                -- Hidden labels can contain an old session/default countdown. Only
+                -- trust them after seeing an update, or while the popup is visible.
+                local updated=lastText~=nil and text~=lastText
+                if seconds and ((shown and (text~=lastText or not wasVisible)) or updated) then
+                    deadline=now+seconds; lastSync=now
+                end
+                lastText=text; wasVisible=shown
+            end
+            if deadline then
+                local remaining,nextCycle=bitTimerRemaining(deadline,now)
+                bitTimerLabel.Text=string.format('%02d:%02d',math.floor(remaining/60),remaining%60)
+                local estimated=nextCycle or now-lastSync>3
+                bitTimerNote.Text=estimated and 'Estimated from last generator sync' or 'Synced with generator'
+            else
+                bitTimerLabel.Text='--:--'
+                bitTimerNote.Text='Open generator once to sync'
+            end
+        end)
+        if not ok and os.clock()-lastWarning>=10 then
+            lastWarning=os.clock(); warn('[TBOD Bit Timer]',err)
+        end
+        task.wait(0.25)
+    end
+end)
 -- Ownership lookup
 local cachedTycoon,nextLookup=nil,0
 local function owns(object)
