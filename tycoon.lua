@@ -33,7 +33,7 @@ end
 local function rootPart()
     return player.Character and player.Character:FindFirstChild('HumanoidRootPart')
 end
-local multipliers = {K=1e3,M=1e6,B=1e9,T=1e12,Q=1e15,QA=1e15,QN=1e18,QI=1e18,SX=1e21,SP=1e24,O=1e27,N=1e30,D=1e33}
+local multipliers = {K=1e3,M=1e6,B=1e9,T=1e12,Q=1e15,QA=1e15,QN=1e18,QI=1e18,SX=1e21,SP=1e24,O=1e27,OC=1e27,N=1e30,NO=1e30,D=1e33,DC=1e33}
 local function number(text)
     text = tostring(text or ''):upper():gsub(',', '')
     if text:find('FREE', 1, true) then return 0 end
@@ -370,11 +370,17 @@ local function rebirthCount()
     if stats then
         for _,name in ipairs({'Rebirths','Rebirth','RebirthsCount'}) do
             local value=stats:FindFirstChild(name)
-            if value and value:IsA('ValueBase') then local count=number(value.Value); if count then return count end end
+            if value and value:IsA('ValueBase') then local count=tonumber(value.Value) or tonumber(tostring(value.Value):gsub(',',''):match('%d+')); if count then return count end end
         end
     end
     local labelObject=path(player:FindFirstChild('PlayerGui'),'System','PlayerList','Holder',player.Name,'RebsText')
-    if labelObject and labelObject:IsA('TextLabel') then return number(labelObject.Text) end
+    if labelObject and not (labelObject:IsA('TextLabel') or labelObject:IsA('TextButton')) then
+        labelObject=labelObject:FindFirstChildWhichIsA('TextLabel',true)
+    end
+    -- Count labels may say '123 Rebirths'; their trailing word is not a cash suffix.
+    if labelObject and (labelObject:IsA('TextLabel') or labelObject:IsA('TextButton')) then
+        return tonumber(labelObject.Text:gsub('<[^>]->',''):gsub(',',''):match('%d+'))
+    end
     return nil
 end
 local function rebirthConfirmed(beforeCount,beforeCash,oldGoal)
@@ -394,7 +400,114 @@ local function rebirthConfirmed(beforeCount,beforeCash,oldGoal)
         and current~=nil and goal~=nil and current<goal
         and not visible(rebirthObjects().frame)
 end
-local function connectedClick(button, signalName, direct)
+local function diagnoseRebirth()
+    local objects=rebirthObjects()
+    local root=objects.target or objects.frame
+    warn('[TBOD Rebirth diagnostic] cash='..tostring(cash())..' mode='..state.mode
+        ..' firesignal='..type(firesignal)..' getconnections='..type(getconnections))
+    warn('[TBOD Rebirth diagnostic] rebirthCount='..tostring(rebirthCount()))
+    local row=path(player:FindFirstChild('PlayerGui'),'System','PlayerList','Holder',player.Name)
+    if row then
+        for _,object in ipairs(row:GetDescendants()) do
+            if (object:IsA('TextLabel') or object:IsA('TextButton')) and object.Name~='CashText' then
+                warn('[TBOD Rebirth diagnostic] player label '..object:GetFullName()..'='..object.Text:sub(1,120))
+            end
+        end
+    end
+    for _,folderName in ipairs({'leaderstats','stats'}) do
+        local folder=player:FindFirstChild(folderName)
+        if folder then
+            for _,value in ipairs(folder:GetChildren()) do
+                if value:IsA('ValueBase') then
+                    warn('[TBOD Rebirth diagnostic] stat '..value:GetFullName()..'='..tostring(value.Value))
+                end
+            end
+        else warn('[TBOD Rebirth diagnostic] '..folderName..' missing') end
+    end
+    local pg=player:FindFirstChild('PlayerGui')
+    for _,labelObject in ipairs({path(pg,'System','Main','Cash','CashText') or false,
+        path(pg,'System','PlayerList','Holder',player.Name,'CashText') or false}) do
+        if labelObject and (labelObject:IsA('TextLabel') or labelObject:IsA('TextButton')) then
+            warn('[TBOD Rebirth diagnostic] cash label '..labelObject:GetFullName()..'='..labelObject.Text)
+        end
+    end
+    if root then
+        local ancestor=root
+        while ancestor do
+            if ancestor:IsA('GuiObject') and not ancestor.Visible then
+                warn('[TBOD Rebirth diagnostic] Hidden ancestor: '..ancestor:GetFullName())
+            elseif ancestor:IsA('LayerCollector') and not ancestor.Enabled then
+                warn('[TBOD Rebirth diagnostic] Disabled GUI: '..ancestor:GetFullName())
+            end
+            ancestor=ancestor.Parent
+        end
+    end
+    if not root then warn('[TBOD Rebirth diagnostic] Exact rebirth menu/control missing'); return end
+    local nodes={root}
+    for _,object in ipairs(root:GetDescendants()) do nodes[#nodes+1]=object end
+    local reported=0
+    for _,object in ipairs(nodes) do
+        if object:IsA('GuiObject') then
+            reported=reported+1
+            if reported>60 then warn('[TBOD Rebirth diagnostic] Control list truncated at 60'); break end
+            local description=object:GetFullName()..' ['..object.ClassName..'] visible='..tostring(visible(object))
+                ..' active='..tostring(object.Active)
+            if object:IsA('TextButton') or object:IsA('TextLabel') then description=description..' text='..object.Text:sub(1,120) end
+            local readable,interactable=pcall(function() return object.Interactable end)
+            if readable then description=description..' interactable='..tostring(interactable) end
+            warn('[TBOD Rebirth diagnostic] '..description)
+            if type(getconnections)=='function' then
+                for _,name in ipairs({'MouseButton1Click','Activated','MouseButton1Down','MouseButton1Up','InputBegan','InputEnded'}) do
+                    local found,signal=pcall(function() return object[name] end)
+                    if found and typeof(signal)=='RBXScriptSignal' then
+                        local ok,connections=pcall(getconnections,signal)
+                        if ok and type(connections)=='table' then
+                            local enabled,foreign,callbacks=0,0,0
+                            for index,connection in ipairs(connections) do
+                                local details={}
+                                for _,property in ipairs({'Enabled','ForeignState','LuaConnection','LuaWaitConnection','Function','Thread','Fire','Defer'}) do
+                                    local readable,value=pcall(function() return connection[property] end)
+                                    local info=readable and (type(value)=='boolean' and tostring(value) or typeof(value)) or ('ERROR '..tostring(value))
+                                    details[#details+1]=property..'='..info
+                                    if readable and property=='Enabled' and value~=false then enabled=enabled+1 end
+                                    if readable and property=='ForeignState' and value then foreign=foreign+1 end
+                                    if readable and property=='Function' and type(value)=='function' then callbacks=callbacks+1 end
+                                end
+                                warn('[TBOD Rebirth diagnostic] '..name..' connection '..index..' '..table.concat(details,' '))
+                            end
+                            warn('[TBOD Rebirth diagnostic] '..name..': total='..#connections
+                                ..' enabled='..enabled..' foreign='..foreign..' callbacks='..callbacks)
+                        else warn('[TBOD Rebirth diagnostic] '..name..' inspection failed: '..tostring(connections)) end
+                    end
+                end
+            end
+        end
+    end
+end
+local function replicatedClick(button)
+    if not button or not visible(button) then return false end
+    if type(cansignalreplicate)~='function' or type(replicatesignal)~='function' then
+        warn('[TBOD Rebirth] Volt replication APIs unavailable'); return false
+    end
+    local signal=button.MouseButton1Click
+    local checked,supported=pcall(cansignalreplicate,signal)
+    warn('[TBOD Rebirth] MouseButton1Click replication supported='..tostring(checked and supported==true))
+    if not checked or supported~=true then return false end
+    -- MouseButton1Click has no user arguments. Refuse any unexpected engine signature.
+    if type(getsignalarguments)=='function' then
+        local ok,args=pcall(getsignalarguments,signal)
+        if not ok or type(args)~='table' then
+            warn('[TBOD Rebirth] Cannot inspect replication signature'); return false
+        end
+        if #args~=0 then
+            warn('[TBOD Rebirth] Unexpected MouseButton1Click signature ('..#args..' arguments); skipped'); return false
+        end
+    end
+    local ok,err=pcall(replicatesignal,signal)
+    if not ok then warn('[TBOD Rebirth replication]',err) end
+    return ok
+end
+local function connectedClick(button, signalName, direct, deferred)
     if not button or not button:IsA('GuiButton') or not visible(button) then return false end
     if type(getconnections)~='function' then return false end
     local ok,connections=pcall(function() return getconnections(button[signalName]) end)
@@ -404,6 +517,11 @@ local function connectedClick(button, signalName, direct)
     for _,connection in ipairs(connections) do
         local worked,result=pcall(function()
             if connection.Enabled==false then return false end
+            if deferred then
+                if type(connection.Defer)~='function' then return false end
+                if signalName=='Activated' then connection:Defer(nil,1) else connection:Defer() end
+                return true
+            end
             if not direct and type(connection.Fire)=='function' then
                 if signalName=='Activated' then connection:Fire(nil,1) else connection:Fire() end
                 return true
@@ -480,6 +598,7 @@ local function startRebirth(goal)
             if not objects.button or not visible(objects.button) then
                 local target=objects.target
                 warn('[TBOD Rebirth] Inner.Rebirth: '..(target and (target:GetFullName()..' ['..target.ClassName..']') or 'missing'))
+                pcall(diagnoseRebirth)
                 error('No visible GuiButton inside exact rebirth control')
             end
             task.wait(0.4)
@@ -495,6 +614,8 @@ local function startRebirth(goal)
             warn('[TBOD Rebirth] Confirmation target: '..button:GetFullName()..' ['..button.ClassName..']')
             -- Volt's documented signal/connection APIs do not need OS mouse input.
             local methods={
+                {name='supported engine replication',run=replicatedClick},
+                {name='MouseButton1Click deferred connection',run=function(b) return connectedClick(b,'MouseButton1Click',false,true) end},
                 {name='MouseButton1Click signal',run=function(b) return signalClick(b,'MouseButton1Click') end},
                 {name='Activated signal',run=function(b) return signalClick(b,'Activated') end},
                 {name='MouseButton1Click connection',run=function(b) return connectedClick(b,'MouseButton1Click') end},
@@ -525,7 +646,8 @@ local function startRebirth(goal)
                 status.Text='Rebirth verified'
                 task.wait(1)
             elseif activeRebirth() then
-                error('Cursor-free rebirth not verified; send the TBOD Rebirth console messages')
+                pcall(diagnoseRebirth)
+                error('Cursor-free rebirth not verified; send the TBOD Rebirth diagnostic messages')
             end
         end)
         state.busy=false
