@@ -1,16 +1,18 @@
 -- TBOD Automation: simulated-touch buying + cursor-free Volt rebirth attempts
--- Drag the header. Click +/- to minimize. Both features start OFF.
+-- Drag the header. Click +/- to minimize. All toggles start OFF.
 local Players = game:GetService('Players')
 local Workspace = game:GetService('Workspace')
 local UIS = game:GetService('UserInputService')
 local TweenService = game:GetService('TweenService')
+local TeleportService = game:GetService('TeleportService')
+local CoreGui = game:GetService('CoreGui')
 local player = Players.LocalPlayer
 local env = getgenv()
 local KEY = '__TBOD_Automation'
 for _, key in ipairs({KEY, '__TycoonAutoBuyRebirth'}) do
     if env[key] and env[key].stop then pcall(env[key].stop) end
 end
-local state = {running=true, buy=false, rebirth=false, mode='Ready', busy=false, lastRebirth=-math.huge, connections={}}
+local state = {running=true, buy=false, rebirth=false, rejoin=false, disconnected=false, mode='Ready', busy=false, lastRebirth=-math.huge, connections={}}
 env[KEY] = state
 local function connect(signal, callback)
     local connection = signal:Connect(callback)
@@ -69,13 +71,13 @@ local function label(parent,text,x,y,w,h,size,color,bold)
     obj.Font=bold and Enum.Font.GothamBold or Enum.Font.Gotham; obj.Text=text; obj.TextSize=size; obj.TextColor3=color or C.text; obj.TextXAlignment=Enum.TextXAlignment.Left; obj.Parent=parent
     return obj
 end
-local frame=Instance.new('Frame'); frame.Size=UDim2.fromOffset(390,414); frame.Position=UDim2.fromOffset(24,120); frame.BackgroundColor3=C.bg; frame.BorderSizePixel=0; frame.Active=true; frame.ClipsDescendants=true; frame.Parent=gui
+local frame=Instance.new('Frame'); frame.Size=UDim2.fromOffset(390,490); frame.Position=UDim2.fromOffset(24,120); frame.BackgroundColor3=C.bg; frame.BorderSizePixel=0; frame.Active=true; frame.ClipsDescendants=true; frame.Parent=gui
 round(frame,18); outline(frame)
 local scale=Instance.new('UIScale'); scale.Parent=frame
 local cameraConnection
 local function fitScreen()
     local camera=Workspace.CurrentCamera
-    if camera then local v=camera.ViewportSize; scale.Scale=math.clamp(math.min((v.X-24)/390,(v.Y-24)/414),0.4,1) end
+    if camera then local v=camera.ViewportSize; scale.Scale=math.clamp(math.min((v.X-24)/390,(v.Y-24)/490),0.4,1) end
 end
 local function hookCamera()
     if cameraConnection then cameraConnection:Disconnect() end
@@ -88,7 +90,7 @@ local logo=Instance.new('Frame'); logo.Position=UDim2.fromOffset(16,17); logo.Si
 local logoText=label(logo,'T',0,0,34,34,20,C.bg,true); logoText.TextXAlignment=Enum.TextXAlignment.Center
 label(header,'TBOD',60,15,210,23,19,C.text,true); label(header,'Automation dashboard',60,39,230,16,11,C.muted)
 local minimize=Instance.new('TextButton'); minimize.Position=UDim2.new(1,-48,0,18); minimize.Size=UDim2.fromOffset(32,32); minimize.BackgroundColor3=C.card; minimize.BorderSizePixel=0; minimize.Text='−'; minimize.Font=Enum.Font.GothamBold; minimize.TextSize=21; minimize.TextColor3=C.text; minimize.Parent=header; round(minimize,10)
-local content=Instance.new('Frame'); content.Position=UDim2.fromOffset(16,76); content.Size=UDim2.fromOffset(358,322); content.BackgroundTransparency=1; content.Parent=frame
+local content=Instance.new('Frame'); content.Position=UDim2.fromOffset(16,76); content.Size=UDim2.fromOffset(358,398); content.BackgroundTransparency=1; content.Parent=frame
 local function card(x,y,w,h)
     local obj=Instance.new('Frame'); obj.Position=UDim2.fromOffset(x,y); obj.Size=UDim2.fromOffset(w,h); obj.BackgroundColor3=C.card; obj.BorderSizePixel=0; obj.Parent=content; round(obj,14); outline(obj); return obj
 end
@@ -121,7 +123,20 @@ label(bitTimerCard,'NEXT BITS',14,8,190,16,9,C.muted,true)
 local bitTimerNote=label(bitTimerCard,'Open generator once to sync',14,30,224,22,10,C.muted)
 local bitTimerLabel=label(bitTimerCard,'--:--',242,16,102,34,24,C.green,true)
 bitTimerLabel.TextXAlignment=Enum.TextXAlignment.Right
+local rejoinCard=card(0,332,358,66)
+label(rejoinCard,'AUTO REJOIN',14,8,190,16,9,C.muted,true)
+local rejoinNote=label(rejoinCard,'Return to this server after disconnect',14,30,214,26,10,C.muted)
+rejoinNote.TextWrapped=true
+local rejoinButton=Instance.new('TextButton')
+rejoinButton.Position=UDim2.fromOffset(242,17); rejoinButton.Size=UDim2.fromOffset(102,32)
+rejoinButton.BackgroundColor3=C.bg; rejoinButton.BorderSizePixel=0
+rejoinButton.Font=Enum.Font.GothamBold; rejoinButton.TextSize=11
+rejoinButton.TextColor3=C.muted; rejoinButton.AutoButtonColor=false; rejoinButton.Parent=rejoinCard
+round(rejoinButton,9)
 local function refresh()
+    rejoinButton.Text=state.rejoin and 'ON  •' or 'OFF'
+    rejoinButton.BackgroundColor3=state.rejoin and Color3.fromRGB(27,66,52) or C.bg
+    rejoinButton.TextColor3=state.rejoin and C.green or C.muted
     buyButton.Text=state.buy and 'ENABLED  •' or 'ENABLE AUTO BUY'
     rebirthButton.Text=state.rebirth and 'ENABLED  •' or 'ENABLE REBIRTH'
     modeButton.Text=state.mode..'  ↔'
@@ -137,11 +152,94 @@ connect(buyButton.MouseButton1Click,function()
 end)
 connect(rebirthButton.MouseButton1Click,function() state.rebirth=not state.rebirth; refresh() end)
 connect(modeButton.MouseButton1Click,function() state.mode=state.mode=='Ready' and 'Essence Cap' or 'Ready'; refresh() end)
+-- Remember the exact server; never silently fall back to a different server.
+local rejoinPlaceId,rejoinJobId=game.PlaceId,game.JobId
+local rejoinNextAttempt,rejoinAttempts=0,0
+local rejoinInFlight=false
+connect(rejoinButton.MouseButton1Click,function()
+    state.rejoin=not state.rejoin
+    rejoinNextAttempt=0; rejoinAttempts=0
+    rejoinNote.Text=state.rejoin and 'Watching for a disconnect' or 'Return to this server after disconnect'
+    refresh()
+end)
+-- CoreGui's disconnect prompt can remain available after PlayerGui stops updating.
+-- Its hierarchy is internal to Roblox, so inspect defensively and poll for late text.
+local function disconnectPrompt()
+    local overlay=path(CoreGui,'RobloxPromptGui','promptOverlay')
+    if not overlay then return false end
+    for _,prompt in ipairs(overlay:GetChildren()) do
+        if prompt.Name=='ErrorPrompt' and visible(prompt) then
+            local parts={}
+            for _,object in ipairs(prompt:GetDescendants()) do
+                if (object:IsA('TextLabel') or object:IsA('TextButton')) and visible(object) then
+                    parts[#parts+1]=object.Text
+                end
+            end
+            local text=table.concat(parts,' '):lower()
+            if text:find('disconnected',1,true) or text:find('lost connection',1,true)
+                or text:find('connection lost',1,true) or text:find('kicked',1,true)
+                or text:find('check your internet',1,true)
+                or text:find('277',1,true) or text:find('279',1,true) then
+                return true
+            end
+        end
+    end
+    return false
+end
+connect(TeleportService.TeleportInitFailed,function(failedPlayer,_,message,placeId)
+    if failedPlayer~=player or placeId~=rejoinPlaceId or not rejoinInFlight then return end
+    rejoinInFlight=false
+    rejoinNextAttempt=os.clock()+math.min(10*math.max(rejoinAttempts,1),30)
+    if state.rejoin then
+        rejoinNote.Text='Rejoin failed; retrying shortly'
+        warn('[TBOD Auto Rejoin] '..tostring(message))
+    end
+end)
+task.spawn(function()
+    local lastWarning=-math.huge
+    while state.running do
+        local ok,err=pcall(function()
+            -- Keep the disconnect latched even if the error prompt changes during retries.
+            if not state.disconnected and disconnectPrompt() then
+                state.disconnected=true
+                rejoinNextAttempt=os.clock()+3
+                warn('[TBOD Auto Rejoin] Disconnect detected')
+            end
+            if not state.rejoin or not state.disconnected then return end
+            if rejoinJobId=='' or rejoinPlaceId<=0 then
+                state.rejoin=false; refresh()
+                rejoinNote.Text='No live server ID; rejoin unavailable'
+                return
+            end
+            local now=os.clock()
+            if now<rejoinNextAttempt then return end
+            -- A missing TeleportInitFailed event must not leave retries stuck forever.
+            rejoinAttempts=rejoinAttempts+1
+            rejoinInFlight=true
+            rejoinNextAttempt=now+30
+            rejoinNote.Text='Rejoining same server: attempt '..rejoinAttempts
+            warn('[TBOD Auto Rejoin] Attempt '..rejoinAttempts..' to server '..rejoinJobId)
+            local sent,message=pcall(function()
+                TeleportService:TeleportToPlaceInstance(rejoinPlaceId,rejoinJobId,player)
+            end)
+            if not sent then
+                rejoinInFlight=false
+                rejoinNextAttempt=os.clock()+math.min(10*rejoinAttempts,30)
+                rejoinNote.Text='Waiting for connection; will retry'
+                warn('[TBOD Auto Rejoin] '..tostring(message))
+            end
+        end)
+        if not ok and os.clock()-lastWarning>=10 then
+            lastWarning=os.clock(); warn('[TBOD Auto Rejoin]',err)
+        end
+        task.wait(1)
+    end
+end)
 local minimized,resizeTween=false,nil
 connect(minimize.MouseButton1Click,function()
     minimized=not minimized; content.Visible=not minimized; minimize.Text=minimized and '+' or '−'
     if resizeTween then resizeTween:Cancel() end
-    resizeTween=TweenService:Create(frame,TweenInfo.new(0.18,Enum.EasingStyle.Quad,Enum.EasingDirection.Out),{Size=UDim2.fromOffset(390,minimized and 68 or 414)}); resizeTween:Play()
+    resizeTween=TweenService:Create(frame,TweenInfo.new(0.18,Enum.EasingStyle.Quad,Enum.EasingDirection.Out),{Size=UDim2.fromOffset(390,minimized and 68 or 490)}); resizeTween:Play()
 end)
 local dragging,dragStart,frameStart,touch
 local dragSurface=Instance.new('Frame'); dragSurface.BackgroundTransparency=1; dragSurface.Size=UDim2.new(1,-56,1,0); dragSurface.Active=true; dragSurface.ZIndex=5; dragSurface.Parent=header
@@ -623,7 +721,7 @@ local function pressReleaseClick(button)
     local up=signalClick(button,'MouseButton1Up')
     return down or up
 end
-local function activeRebirth() return state.running and state.rebirth end
+local function activeRebirth() return state.running and state.rebirth and not state.disconnected end
 local function waitConfirmation(beforeCount,beforeCash,oldGoal,duration)
     local deadline=os.clock()+duration
     repeat
@@ -720,7 +818,7 @@ connect(player.CharacterAdded,function() nextLookup=0; table.clear(retries) end)
 task.spawn(function()
     local lastWarning=-math.huge
     while state.running do
-        if state.buy and not state.busy then
+        if state.buy and not state.busy and not state.disconnected then
             local ok,err=pcall(updateBuy)
             if not ok and os.clock()-lastWarning>=5 then lastWarning=os.clock(); warn('[TBOD Auto Buy]',err) end
         end
@@ -738,7 +836,7 @@ task.spawn(function()
                 state.lastReadinessLog=readinessKey
                 print('[TBOD Readiness] '..tostring(state.readiness)..'; mode='..state.mode)
             end
-            if state.rebirth and not state.busy then
+            if state.rebirth and not state.busy and not state.disconnected then
                 if goal and cash()>=goal and (state.mode=='Ready' or essenceCapped()) then
                     startRebirth(goal)
                 elseif not state.buy then
