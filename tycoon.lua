@@ -5,7 +5,7 @@
 local WEBHOOK = {
     URL = 'https://discord.com/api/webhooks/1376617341965701160/IdrQE4RRpYjff8dPmaXirBKSlbDwO6rzpG_ybWIH4QKP4ivyprXScGCkQNDziuAK4jco',
     Enabled = true,
-    StatPaths = {Essence = nil, Bits = nil},
+    StatPaths = {Essence = nil, Bits = nil, Rebirths = nil},
 }
 local Players = game:GetService('Players')
 local Workspace = game:GetService('Workspace')
@@ -555,21 +555,84 @@ local function essenceCapped()
     end
     return false
 end
-local function rebirthCount()
-    local stats=player:FindFirstChild('leaderstats') or player:FindFirstChild('stats')
-    if stats then
-        for _,name in ipairs({'Rebirths','Rebirth','RebirthsCount'}) do
-            local value=stats:FindFirstChild(name)
-            if value and value:IsA('ValueBase') then local count=tonumber(value.Value) or tonumber(tostring(value.Value):gsub(',',''):match('%d+')); if count then return count end end
+-- Shared reader: automation confirmation and Discord use the same live count.
+local rebirthStatNames={Rebirth=true,Rebirths=true,RebirthCount=true,RebirthsCount=true,
+    TotalRebirths=true,Rebs=true,RebsText=true,RebirthText=true,RebirthsText=true,
+    RebirthCountText=true,RebirthsCountText=true}
+local function parseRebirthCount(raw)
+    local text=tostring(raw or ''):gsub('<[^>]->',''):gsub(',','')
+    local digits,suffix=text:upper():match('(%d+%.?%d*)%s*([A-Z]*)')
+    if not digits then return nil end
+    -- '1.2K Rebirths' is abbreviated; '123 Rebirths' is a plain count.
+    local count=tonumber(digits)*(multipliers[suffix] or 1)
+    return count>=0 and math.floor(count) or nil
+end
+local function rebirthObjectCount(object,allowContainer)
+    if not object then return nil end
+    if object:IsA('ValueBase') then return parseRebirthCount(object.Value) end
+    if object:IsA('TextLabel') or object:IsA('TextButton') then return parseRebirthCount(object.Text) end
+    if allowContainer then
+        -- A stat card can have a title and a separate numeric value label.
+        for _,name in ipairs({'Value','Count','Amount','Text','RebsText','RebirthsText'}) do
+            local label=object:FindFirstChild(name,true)
+            if label then
+                local count=rebirthObjectCount(label,false)
+                if count~=nil then return count end
+            end
+        end
+        for _,label in ipairs(object:GetDescendants()) do
+            if label:IsA('TextLabel') then
+                local count=parseRebirthCount(label.Text)
+                if count~=nil then return count end
+            end
         end
     end
-    local labelObject=path(player:FindFirstChild('PlayerGui'),'System','PlayerList','Holder',player.Name,'RebsText')
-    if labelObject and not (labelObject:IsA('TextLabel') or labelObject:IsA('TextButton')) then
-        labelObject=labelObject:FindFirstChildWhichIsA('TextLabel',true)
+    return nil
+end
+local function rebirthCount()
+    local explicit=WEBHOOK.StatPaths.Rebirths
+    if explicit then return rebirthObjectCount(path(player,table.unpack(explicit)),true) end
+    -- Inspect each stats folder separately: leaderstats may contain only cash.
+    for _,folderName in ipairs({'leaderstats','stats','Stats','Data','PlayerData'}) do
+        local folder=player:FindFirstChild(folderName)
+        if folder then
+            for _,object in ipairs(folder:GetDescendants()) do
+                if object:IsA('ValueBase') and rebirthStatNames[object.Name] then
+                    local count=rebirthObjectCount(object,false)
+                    if count~=nil then return count end
+                end
+            end
+            for name in pairs(rebirthStatNames) do
+                local count=parseRebirthCount(folder:GetAttribute(name))
+                if count~=nil then return count end
+            end
+        end
     end
-    -- Count labels may say '123 Rebirths'; their trailing word is not a cash suffix.
-    if labelObject and (labelObject:IsA('TextLabel') or labelObject:IsA('TextButton')) then
-        return tonumber(labelObject.Text:gsub('<[^>]->',''):gsub(',',''):match('%d+'))
+    for name in pairs(rebirthStatNames) do
+        local count=parseRebirthCount(player:GetAttribute(name))
+        if count~=nil then return count end
+        local countValue=rebirthObjectCount(player:FindFirstChild(name),false)
+        if countValue~=nil then return countValue end
+    end
+    local pg=player:FindFirstChild('PlayerGui')
+    local holder=path(pg,'System','PlayerList','Holder')
+    local row=holder and (holder:FindFirstChild(player.Name) or holder:FindFirstChild(tostring(player.UserId)) or holder:FindFirstChild(player.DisplayName))
+    -- Restrict leaderboard lookup to this player, never another player's row.
+    for _,root in ipairs({row or false,path(pg,'System','Main') or false}) do
+        if root then
+            for _,object in ipairs(root:GetDescendants()) do
+                if rebirthStatNames[object.Name] then
+                    -- Only count labels here; do not parse rebirth action buttons.
+                    if object:IsA('TextLabel') or (row and object:IsDescendantOf(row) and object:IsA('TextButton')) then
+                        local count=rebirthObjectCount(object,false)
+                        if count~=nil then return count end
+                    elseif not object:IsA('GuiButton') and object.Name~='Rebirth' then
+                        local count=rebirthObjectCount(object,true)
+                        if count~=nil then return count end
+                    end
+                end
+            end
+        end
     end
     return nil
 end
@@ -622,8 +685,11 @@ local function webhookBalance(kind)
     end
     return nil
 end
+local lastKnownWebhookRebirth=nil
 local function queueWebhook(title,essence,rebirths,bits,gain)
     if not WEBHOOK.Enabled or WEBHOOK.URL=='' then return end
+    rebirths=rebirths or rebirthCount() or lastKnownWebhookRebirth
+    if rebirths~=nil then lastKnownWebhookRebirth=rebirths end
     local function display(value) return value~=nil and tostring(value) or 'Unavailable' end
     table.insert(webhookQueue,{
         username='TBOD Notifications', allowed_mentions={parse={}},
@@ -643,16 +709,23 @@ local function notifyRebirth(count)
     task.spawn(function()
         -- Allow the game's reward balances to replicate before reading them.
         task.wait(1)
-        if state.running then queueWebhook('Rebirth complete',webhookBalance('Essence'),count or rebirthCount(),webhookBalance('Bits')) end
+        local deadline=os.clock()+4
+        local liveCount=rebirthCount()
+        while state.running and liveCount==nil and os.clock()<deadline do
+            task.wait(0.25); liveCount=rebirthCount()
+        end
+        if state.running then queueWebhook('Rebirth complete',webhookBalance('Essence'),liveCount or count,webhookBalance('Bits')) end
     end)
 end
 local observedRebirth,observedBits=rebirthCount(),webhookBalance('Bits')
 lastWebhookRebirth=observedRebirth
+lastKnownWebhookRebirth=observedRebirth
 local function observeWebhookStats()
     local count,bits=rebirthCount(),webhookBalance('Bits')
     if count~=nil then
         if observedRebirth~=nil and count>observedRebirth then notifyRebirth(count) end
         observedRebirth=count
+        lastKnownWebhookRebirth=count
     end
     if bits~=nil then
         if observedBits~=nil and bits>observedBits then
@@ -670,7 +743,7 @@ local function watchWebhookValue(object)
     for _,aliases in pairs(statAliases) do
         for _,name in ipairs(aliases) do if object.Name==name then relevant=true end end
     end
-    for _,name in ipairs({'Rebirths','Rebirth','RebirthsCount'}) do if object.Name==name then relevant=true end end
+    if rebirthStatNames[object.Name] then relevant=true end
     for _,explicit in pairs(WEBHOOK.StatPaths) do
         if object==path(player,table.unpack(explicit)) then relevant=true end
     end
