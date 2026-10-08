@@ -3,7 +3,7 @@
 -- Discord: paste your channel webhook URL here, then execute the script.
 -- Optional paths are relative to LocalPlayer (e.g. {'leaderstats','Bits'}).
 local WEBHOOK = {
-    URL = '',
+    URL = 'https://discord.com/api/webhooks/1376617341965701160/IdrQE4RRpYjff8dPmaXirBKSlbDwO6rzpG_ybWIH4QKP4ivyprXScGCkQNDziuAK4jco',
     Enabled = true,
     StatPaths = {Essence = nil, Bits = nil},
 }
