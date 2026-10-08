@@ -6,6 +6,7 @@ local UIS = game:GetService('UserInputService')
 local TweenService = game:GetService('TweenService')
 local TeleportService = game:GetService('TeleportService')
 local CoreGui = game:GetService('CoreGui')
+local GuiService = game:GetService('GuiService')
 local player = Players.LocalPlayer
 local env = getgenv()
 local KEY = '__TBOD_Automation'
@@ -162,30 +163,51 @@ connect(rejoinButton.MouseButton1Click,function()
     rejoinNote.Text=state.rejoin and 'Watching for a disconnect' or 'Return to this server after disconnect'
     refresh()
 end)
--- CoreGui's disconnect prompt can remain available after PlayerGui stops updating.
--- Its hierarchy is internal to Roblox, so inspect defensively and poll for late text.
+-- The engine error channel avoids depending on the prompt hierarchy or language.
+-- Some executors cannot access it, so retain a protected CoreGui fallback.
+local function engineDisconnected()
+    local ok,message=pcall(function() return GuiService:GetErrorMessage() end)
+    return ok and type(message)=='string' and message~=''
+end
+local function disconnectText(text)
+    text=tostring(text or ''):lower()
+    for _,phrase in ipairs({'disconnected','lost connection','connection lost','kicked',
+        'check your internet','please rejoin','reconnect','shutdown','shut down','timed out'}) do
+        if text:find(phrase,1,true) then return true end
+    end
+    for digits in text:gmatch('%d+') do
+        if digits=='260' or digits=='266' or digits=='267' or digits=='277'
+            or digits=='279' or digits=='282' or digits=='285' or digits=='288' then return true end
+    end
+    return false
+end
 local function disconnectPrompt()
-    local overlay=path(CoreGui,'RobloxPromptGui','promptOverlay')
-    if not overlay then return false end
-    for _,prompt in ipairs(overlay:GetChildren()) do
+    if engineDisconnected() then return true end
+    local promptGui=CoreGui:FindFirstChild('RobloxPromptGui')
+    if not promptGui then return false end
+    for _,prompt in ipairs(promptGui:GetDescendants()) do
         if prompt.Name=='ErrorPrompt' and visible(prompt) then
             local parts={}
             for _,object in ipairs(prompt:GetDescendants()) do
-                if (object:IsA('TextLabel') or object:IsA('TextButton')) and visible(object) then
-                    parts[#parts+1]=object.Text
-                end
+                if object:IsA('TextLabel') and visible(object) then parts[#parts+1]=object.Text end
             end
-            local text=table.concat(parts,' '):lower()
-            if text:find('disconnected',1,true) or text:find('lost connection',1,true)
-                or text:find('connection lost',1,true) or text:find('kicked',1,true)
-                or text:find('check your internet',1,true)
-                or text:find('277',1,true) or text:find('279',1,true) then
-                return true
-            end
+            if disconnectText(table.concat(parts,' ')) then return true end
         end
     end
     return false
 end
+local function markDisconnected()
+    if not state.running or state.disconnected then return end
+    state.disconnected=true
+    rejoinNextAttempt=os.clock()+3
+    rejoinNote.Text=state.rejoin and 'Disconnected; rejoining shortly' or 'Disconnected; enable to rejoin'
+    warn('[TBOD Auto Rejoin] Disconnect detected')
+end
+pcall(function()
+    connect(GuiService.ErrorMessageChanged,function()
+        if engineDisconnected() then markDisconnected() end
+    end)
+end)
 connect(TeleportService.TeleportInitFailed,function(failedPlayer,_,message,placeId)
     if failedPlayer~=player or placeId~=rejoinPlaceId or not rejoinInFlight then return end
     rejoinInFlight=false
@@ -201,9 +223,7 @@ task.spawn(function()
         local ok,err=pcall(function()
             -- Keep the disconnect latched even if the error prompt changes during retries.
             if not state.disconnected and disconnectPrompt() then
-                state.disconnected=true
-                rejoinNextAttempt=os.clock()+3
-                warn('[TBOD Auto Rejoin] Disconnect detected')
+                markDisconnected()
             end
             if not state.rejoin or not state.disconnected then return end
             if rejoinJobId=='' or rejoinPlaceId<=0 then
@@ -219,15 +239,19 @@ task.spawn(function()
             rejoinNextAttempt=now+30
             rejoinNote.Text='Rejoining same server: attempt '..rejoinAttempts
             warn('[TBOD Auto Rejoin] Attempt '..rejoinAttempts..' to server '..rejoinJobId)
-            local sent,message=pcall(function()
-                TeleportService:TeleportToPlaceInstance(rejoinPlaceId,rejoinJobId,player)
+            local attempt=rejoinAttempts
+            task.spawn(function()
+                local sent,message=pcall(function()
+                    TeleportService:TeleportToPlaceInstance(rejoinPlaceId,rejoinJobId,player)
+                end)
+                if not state.running or not state.rejoin or attempt~=rejoinAttempts then return end
+                if not sent then
+                    rejoinInFlight=false
+                    rejoinNextAttempt=os.clock()+math.min(10*rejoinAttempts,30)
+                    rejoinNote.Text='Waiting for connection; will retry'
+                    warn('[TBOD Auto Rejoin] '..tostring(message))
+                end
             end)
-            if not sent then
-                rejoinInFlight=false
-                rejoinNextAttempt=os.clock()+math.min(10*rejoinAttempts,30)
-                rejoinNote.Text='Waiting for connection; will retry'
-                warn('[TBOD Auto Rejoin] '..tostring(message))
-            end
         end)
         if not ok and os.clock()-lastWarning>=10 then
             lastWarning=os.clock(); warn('[TBOD Auto Rejoin]',err)
