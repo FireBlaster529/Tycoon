@@ -1,5 +1,12 @@
 -- TBOD Automation: simulated-touch buying + cursor-free Volt rebirth attempts
 -- Drag the header. Click +/- to minimize. All toggles start OFF.
+-- Discord: paste your channel webhook URL here, then execute the script.
+-- Optional paths are relative to LocalPlayer (e.g. {'leaderstats','Bits'}).
+local WEBHOOK = {
+    URL = '',
+    Enabled = true,
+    StatPaths = {Essence = nil, Bits = nil},
+}
 local Players = game:GetService('Players')
 local Workspace = game:GetService('Workspace')
 local UIS = game:GetService('UserInputService')
@@ -566,6 +573,149 @@ local function rebirthCount()
     end
     return nil
 end
+-- Discord notifications run independently of automation toggles.
+local HttpService=game:GetService('HttpService')
+local webhookQueue={}
+local statAliases={
+    Essence={'Essence','Essences','EssenceCount','EssenceText'},
+    Bits={'Bits','Bit','BitCount','BitsCount','BitsText','BitText'},
+}
+local function webhookNumber(value)
+    local text=tostring(value or ''):gsub('<[^>]->',''):gsub(',','')
+    local raw,suffix=text:upper():match('(%d+%.?%d*)%s*([A-Z]*)')
+    if not raw then return nil end
+    return tonumber(raw)*(multipliers[suffix] or 1)
+end
+local function objectBalance(object)
+    if not object then return nil end
+    if object:IsA('ValueBase') then return webhookNumber(object.Value) end
+    if object:IsA('TextLabel') or object:IsA('TextButton') then return webhookNumber(object.Text) end
+    local label=object:FindFirstChildWhichIsA('TextLabel',true)
+    return label and webhookNumber(label.Text) or nil
+end
+local function webhookBalance(kind)
+    local explicit=WEBHOOK.StatPaths[kind]
+    if explicit then return objectBalance(path(player,table.unpack(explicit))) end
+    -- Prefer replicated balances over rounded GUI displays and generator output.
+    for _,folderName in ipairs({'leaderstats','stats','Stats','Data','PlayerData'}) do
+        local folder=player:FindFirstChild(folderName)
+        if folder then
+            for _,name in ipairs(statAliases[kind]) do
+                local value=objectBalance(folder:FindFirstChild(name,true))
+                if value~=nil then return value end
+            end
+        end
+    end
+    for _,name in ipairs(statAliases[kind]) do
+        local value=webhookNumber(player:GetAttribute(name))
+        if value~=nil then return value end
+    end
+    local pg=player:FindFirstChild('PlayerGui')
+    for _,root in ipairs({path(pg,'System','PlayerList','Holder',player.Name) or false,
+        path(pg,'System','Main') or false}) do
+        if root then
+            for _,name in ipairs(statAliases[kind]) do
+                local value=objectBalance(root:FindFirstChild(name,true))
+                if value~=nil then return value end
+            end
+        end
+    end
+    return nil
+end
+local function queueWebhook(title,essence,rebirths,bits,gain)
+    if not WEBHOOK.Enabled or WEBHOOK.URL=='' then return end
+    local function display(value) return value~=nil and tostring(value) or 'Unavailable' end
+    table.insert(webhookQueue,{
+        username='TBOD Notifications', allowed_mentions={parse={}},
+        embeds={{title=title,color=gain and 6012071 or 10190335,
+            description=player.Name..(gain and (' gained '..display(gain)..' bits.') or ' rebirthed.'),
+            fields={
+                {name='Essence',value=display(essence),inline=true},
+                {name='Rebirths',value=display(rebirths),inline=true},
+                {name='Bits',value=display(bits),inline=true},
+            },timestamp=os.date('!%Y-%m-%dT%H:%M:%SZ')}},
+    })
+end
+local lastWebhookRebirth=nil
+local function notifyRebirth(count)
+    if count~=nil and lastWebhookRebirth==count then return end
+    lastWebhookRebirth=count
+    task.spawn(function()
+        -- Allow the game's reward balances to replicate before reading them.
+        task.wait(1)
+        if state.running then queueWebhook('Rebirth complete',webhookBalance('Essence'),count or rebirthCount(),webhookBalance('Bits')) end
+    end)
+end
+local observedRebirth,observedBits=rebirthCount(),webhookBalance('Bits')
+lastWebhookRebirth=observedRebirth
+local function observeWebhookStats()
+    local count,bits=rebirthCount(),webhookBalance('Bits')
+    if count~=nil then
+        if observedRebirth~=nil and count>observedRebirth then notifyRebirth(count) end
+        observedRebirth=count
+    end
+    if bits~=nil then
+        if observedBits~=nil and bits>observedBits then
+            queueWebhook('Bits received',webhookBalance('Essence'),count,bits,bits-observedBits)
+        end
+        -- Spending establishes a new baseline; initial loading never sends a gain.
+        observedBits=bits
+    end
+end
+-- Value changes capture successive rewards between GUI polling intervals.
+local watchedValues=setmetatable({}, {__mode='k'})
+local function watchWebhookValue(object)
+    if not object:IsA('ValueBase') or watchedValues[object] then return end
+    local relevant=false
+    for _,aliases in pairs(statAliases) do
+        for _,name in ipairs(aliases) do if object.Name==name then relevant=true end end
+    end
+    for _,name in ipairs({'Rebirths','Rebirth','RebirthsCount'}) do if object.Name==name then relevant=true end end
+    for _,explicit in pairs(WEBHOOK.StatPaths) do
+        if object==path(player,table.unpack(explicit)) then relevant=true end
+    end
+    if relevant then watchedValues[object]=true; connect(object.Changed,function() pcall(observeWebhookStats) end) end
+end
+for _,object in ipairs(player:GetDescendants()) do watchWebhookValue(object) end
+connect(player.DescendantAdded,watchWebhookValue)
+task.spawn(function()
+    local warned=false
+    while state.running do
+        local ok=pcall(observeWebhookStats)
+        if not ok and not warned then warned=true; warn('[TBOD Webhook] Unable to read balances; set WEBHOOK.StatPaths.') end
+        task.wait(0.5)
+    end
+end)
+task.spawn(function()
+    while state.running do
+        if #webhookQueue==0 then task.wait(0.25) else
+            local payload=webhookQueue[1]
+            local sender=env.request or env.http_request or (env.syn and env.syn.request) or request or http_request or (syn and syn.request)
+            if type(sender)~='function' then
+                warn('[TBOD Webhook] Executor HTTP request API unavailable; notifications disabled.')
+                table.clear(webhookQueue); return
+            end
+            if not WEBHOOK.Enabled or WEBHOOK.URL=='' then table.remove(webhookQueue,1) else
+                local ok,response=pcall(function()
+                    return sender({Url=WEBHOOK.URL,Method='POST',Headers={['Content-Type']='application/json'},Body=HttpService:JSONEncode(payload)})
+                end)
+                local code=ok and type(response)=='table' and tonumber(response.StatusCode or response.Status) or nil
+                if code==429 then
+                    local decodedOk,body=pcall(function() return HttpService:JSONDecode(response.Body or '{}') end)
+                    task.wait(math.max(1,decodedOk and type(body)=='table' and tonumber(body.retry_after) or 2))
+                else
+                    table.remove(webhookQueue,1)
+                    if not code or code<200 or code>=300 then
+                        -- Never print the webhook URL/token or executor error text.
+                        warn('[TBOD Webhook] Notification failed (HTTP '..tostring(code or 'request error')..').')
+                    end
+                    task.wait(1)
+                end
+            end
+        end
+    end
+end)
+
 local function rebirthConfirmed(beforeCount,beforeCash,oldGoal)
     local afterCount=rebirthCount()
     if beforeCount~=nil and afterCount~=nil then return afterCount>beforeCount end
@@ -827,6 +977,7 @@ local function startRebirth(goal)
             if confirmed then
                 cachedGoal=nil; nextLookup=0; table.clear(retries)
                 status.Text='Rebirth verified'
+                notifyRebirth(rebirthCount())
                 task.wait(1)
             elseif activeRebirth() then
                 pcall(diagnoseRebirth)
